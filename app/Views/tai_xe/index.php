@@ -2,6 +2,11 @@
 declare(strict_types=1);
 
 $escape = static fn (mixed $value): string => htmlspecialchars((string) $value, ENT_QUOTES, 'UTF-8');
+$cluster = isset($cluster) && is_array($cluster) ? $cluster : null;
+$orders = isset($orders) && is_array($orders) ? $orders : [];
+$csrfToken = isset($csrfToken) && is_string($csrfToken) ? $csrfToken : '';
+$pageWarning = isset($pageWarning) && is_string($pageWarning) ? $pageWarning : null;
+
 $depot = [
     'vi_do' => (float) ($cluster['vi_do_xuat_phat'] ?? (defined('BUU_CUC_VI_DO_MAC_DINH') ? BUU_CUC_VI_DO_MAC_DINH : 12.2488)),
     'kinh_do' => (float) ($cluster['kinh_do_xuat_phat'] ?? (defined('BUU_CUC_KINH_DO_MAC_DINH') ? BUU_CUC_KINH_DO_MAC_DINH : 109.1905)),
@@ -32,7 +37,7 @@ $orderJson = json_encode(
         </div>
     </header>
 
-    <?php if (is_string($pageWarning ?? null) && $pageWarning !== ''): ?>
+    <?php if (is_string($pageWarning) && $pageWarning !== ''): ?>
         <div class="alert alert-warning" role="status"><?= $escape($pageWarning) ?></div>
     <?php endif; ?>
 

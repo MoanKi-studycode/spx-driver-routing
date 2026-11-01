@@ -9,7 +9,19 @@
 (function () {
     'use strict';
 
-    const config = window.SPX_DISPATCH_CONFIG || {};
+    function loadDispatchConfig() {
+        const configEl = document.getElementById('spx-dispatch-config');
+        if (configEl && configEl.dataset && configEl.dataset.config) {
+            try {
+                return JSON.parse(configEl.dataset.config);
+            } catch (e) {
+                // ignore parse error and fallback
+            }
+        }
+        return window.SPX_DISPATCH_CONFIG || {};
+    }
+
+    const config = loadDispatchConfig();
     const baseUrl = config.baseUrl || '/dinh-tuyen-spx/public';
     const nominatimBaseUrl = (config.nominatimBaseUrl || 'https://nominatim.openstreetmap.org').replace(/\/+$/, '');
     let buuCuc = config.buuCuc || {

@@ -9,64 +9,34 @@ declare(strict_types=1);
 
 $baseUrl = defined('BASE_URL') ? BASE_URL : '/dinh-tuyen-spx/public';
 
-// Đồng bộ biến $title và $pageScript cho layouts/header.php và layouts/footer.php
+$buuCuc = isset($buuCuc) && is_array($buuCuc) ? $buuCuc : [];
+$danhSachBuuCuc = isset($danhSachBuuCuc) && is_array($danhSachBuuCuc) ? $danhSachBuuCuc : [];
+$danhSachCum = isset($danhSachCum) && is_array($danhSachCum) ? $danhSachCum : [];
+$tongHop = isset($tongHop) && is_array($tongHop) ? $tongHop : [];
+$benchmarkData = isset($benchmarkData) && is_array($benchmarkData) ? $benchmarkData : [];
+$csrfToken = isset($csrfToken) && is_string($csrfToken) ? $csrfToken : '';
+
 $title = isset($pageTitle) && is_string($pageTitle) && $pageTitle !== ''
     ? $pageTitle
     : 'Thống Kê & Thực Nghiệm - SPX Express';
 $pageScript = $baseUrl . '/assets/js/bieu_do.js';
 
-$layoutDir = __DIR__ . '/../layouts';
-$hasHeaderLayout = is_file($layoutDir . '/header.php');
-$hasNavbarLayout = is_file($layoutDir . '/navbar.php');
-$hasFooterLayout = is_file($layoutDir . '/footer.php');
-
-if ($hasHeaderLayout) {
-    require $layoutDir . '/header.php';
-?>
-<link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.min.css" rel="stylesheet">
-<?php
-} else {
-?>
-<!DOCTYPE html>
-<html lang="vi">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title><?php echo htmlspecialchars((string) $title, ENT_QUOTES, 'UTF-8'); ?></title>
-    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
-    <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.min.css" rel="stylesheet">
-    <link rel="stylesheet" href="<?php echo htmlspecialchars($baseUrl . '/assets/css/app.css', ENT_QUOTES, 'UTF-8'); ?>">
-</head>
-<body class="bg-light">
-<?php
+$statsConfigJson = json_encode([
+    'baseUrl' => $baseUrl,
+    'buuCuc' => $buuCuc,
+    'tongHop' => $tongHop,
+    'danhSachCum' => $danhSachCum,
+    'benchmark' => $benchmarkData,
+], JSON_UNESCAPED_UNICODE | JSON_HEX_TAG | JSON_HEX_APOS | JSON_HEX_AMP | JSON_HEX_QUOT);
+if (!is_string($statsConfigJson)) {
+    $statsConfigJson = '{}';
 }
 
-if ($hasNavbarLayout) {
-    require $layoutDir . '/navbar.php';
-} else {
+require dirname(__DIR__) . '/layouts/header.php';
+require dirname(__DIR__) . '/layouts/navbar.php';
 ?>
-<nav class="navbar navbar-expand-lg navbar-dark shadow-sm" style="background-color: #ee4d2d;">
-    <div class="container-fluid px-3">
-        <a class="navbar-brand fw-bold d-flex align-items-center gap-2" href="<?php echo htmlspecialchars($baseUrl . '/dieu-phoi', ENT_QUOTES, 'UTF-8'); ?>">
-            <i class="bi bi-truck-front-fill"></i>
-            <span>SPX Express - Điều Phối Chặng Cuối</span>
-        </a>
-        <div class="d-flex align-items-center gap-2">
-            <a href="<?php echo htmlspecialchars($baseUrl . '/dieu-phoi', ENT_QUOTES, 'UTF-8'); ?>" class="btn btn-sm btn-outline-light">
-                <i class="bi bi-diagram-3-fill me-1"></i>Bản đồ Điều phối
-            </a>
-            <a href="<?php echo htmlspecialchars($baseUrl . '/thong-ke', ENT_QUOTES, 'UTF-8'); ?>" class="btn btn-sm btn-light fw-semibold text-danger">
-                <i class="bi bi-bar-chart-line-fill me-1"></i>Thống kê &amp; Thực nghiệm
-            </a>
-            <a href="<?php echo htmlspecialchars($baseUrl . '/logout', ENT_QUOTES, 'UTF-8'); ?>" class="btn btn-sm btn-dark ms-2">
-                <i class="bi bi-box-arrow-right me-1"></i>Đăng xuất
-            </a>
-        </div>
-    </div>
-</nav>
-<?php
-}
-?>
+
+<div id="spx-stats-config" class="d-none" data-config="<?php echo htmlspecialchars($statsConfigJson, ENT_QUOTES, 'UTF-8'); ?>"></div>
 
 <div class="container-fluid py-3 px-3">
     <!-- 1. Header thông tin Bưu cục & Nút Chạy Benchmark -->
@@ -79,7 +49,7 @@ if ($hasNavbarLayout) {
                             <i class="bi bi-bar-chart-steps me-1"></i><?php echo htmlspecialchars((string) ($buuCuc['ma_buu_cuc'] ?? 'SPX_KH_NT01'), ENT_QUOTES, 'UTF-8'); ?>
                         </span>
                         <h5 class="mb-0 fw-bold text-dark">
-                            Thống Kê &amp; Thực Nghiệm Thuật Toán: <?php echo htmlspecialchars((string) ($buuCuc['ten_buu_cuc'] ?? '') . ' (' . ($buuCuc['ten_quan_huyen'] ?? '') . ' - ' . ($buuCuc['ten_tinh'] ?? '') . ')', ENT_QUOTES, 'UTF-8'); ?>
+                            Thống Kê &amp; Thực Nghiệm Thuật Toán: <?php echo htmlspecialchars((string) ($buuCuc['ten_buu_cuc'] ?? '') . ' (' . (string) ($buuCuc['ten_quan_huyen'] ?? '') . ' - ' . (string) ($buuCuc['ten_tinh'] ?? '') . ')', ENT_QUOTES, 'UTF-8'); ?>
                         </h5>
                     </div>
                     <div class="small text-secondary">
@@ -93,9 +63,9 @@ if ($hasNavbarLayout) {
                             <label for="select-buu-cuc-tk" class="small text-muted text-nowrap mb-0">Cơ sở:</label>
                             <select id="select-buu-cuc-tk" name="buu_cuc_id" class="form-select form-select-sm" onchange="this.form.submit()">
                                 <?php foreach ($danhSachBuuCuc as $bcItem) { ?>
-                                    <option value="<?php echo htmlspecialchars((string) $bcItem['id'], ENT_QUOTES, 'UTF-8'); ?>"
-                                        <?php echo ((int) $bcItem['id'] === (int) $buuCuc['id']) ? 'selected' : ''; ?>>
-                                        <?php echo htmlspecialchars((string) $bcItem['ten_buu_cuc'] . ' (' . (string) $bcItem['ten_quan_huyen'] . ')', ENT_QUOTES, 'UTF-8'); ?>
+                                    <option value="<?php echo htmlspecialchars((string) ($bcItem['id'] ?? ''), ENT_QUOTES, 'UTF-8'); ?>"
+                                        <?php echo ((int) ($bcItem['id'] ?? 0) === (int) ($buuCuc['id'] ?? 0)) ? 'selected' : ''; ?>>
+                                        <?php echo htmlspecialchars((string) ($bcItem['ten_buu_cuc'] ?? '') . ' (' . (string) ($bcItem['ten_quan_huyen'] ?? '') . ')', ENT_QUOTES, 'UTF-8'); ?>
                                     </option>
                                 <?php } ?>
                             </select>
@@ -231,18 +201,18 @@ if ($hasNavbarLayout) {
                             <tbody id="tbody-benchmark">
                                 <?php foreach ($benchmarkData as $row) { ?>
                                     <tr>
-                                        <td class="text-center fw-bold"><?php echo htmlspecialchars((string) $row['so_don'], ENT_QUOTES, 'UTF-8'); ?> đơn</td>
-                                        <td class="text-center"><?php echo htmlspecialchars((string) $row['so_cum'], ENT_QUOTES, 'UTF-8'); ?> cụm</td>
-                                        <td class="text-end text-muted"><?php echo htmlspecialchars(number_format((float) $row['km_baseline'], 2), ENT_QUOTES, 'UTF-8'); ?></td>
-                                        <td class="text-end"><?php echo htmlspecialchars(number_format((float) $row['km_nn'], 2), ENT_QUOTES, 'UTF-8'); ?></td>
-                                        <td class="text-end fw-bold text-success"><?php echo htmlspecialchars(number_format((float) $row['km_toi_uu'], 2), ENT_QUOTES, 'UTF-8'); ?></td>
+                                        <td class="text-center fw-bold"><?php echo htmlspecialchars((string) ($row['so_don'] ?? 0), ENT_QUOTES, 'UTF-8'); ?> đơn</td>
+                                        <td class="text-center"><?php echo htmlspecialchars((string) ($row['so_cum'] ?? 0), ENT_QUOTES, 'UTF-8'); ?> cụm</td>
+                                        <td class="text-end text-muted"><?php echo htmlspecialchars(number_format((float) ($row['km_baseline'] ?? 0), 2), ENT_QUOTES, 'UTF-8'); ?></td>
+                                        <td class="text-end"><?php echo htmlspecialchars(number_format((float) ($row['km_nn'] ?? 0), 2), ENT_QUOTES, 'UTF-8'); ?></td>
+                                        <td class="text-end fw-bold text-success"><?php echo htmlspecialchars(number_format((float) ($row['km_toi_uu'] ?? 0), 2), ENT_QUOTES, 'UTF-8'); ?></td>
                                         <td class="text-end">
                                             <span class="badge bg-success-subtle text-success border">
-                                                -<?php echo htmlspecialchars(number_format((float) $row['ty_le_tiet_kiem_baseline'], 2), ENT_QUOTES, 'UTF-8'); ?>%
+                                                -<?php echo htmlspecialchars(number_format((float) ($row['ty_le_tiet_kiem_baseline'] ?? 0), 2), ENT_QUOTES, 'UTF-8'); ?>%
                                             </span>
                                         </td>
                                         <td class="text-end fw-semibold text-primary">
-                                            <?php echo htmlspecialchars(number_format((float) $row['thoi_gian_chay_ms'], 3), ENT_QUOTES, 'UTF-8'); ?> ms
+                                            <?php echo htmlspecialchars(number_format((float) ($row['thoi_gian_chay_ms'] ?? 0), 3), ENT_QUOTES, 'UTF-8'); ?> ms
                                         </td>
                                     </tr>
                                 <?php } ?>
@@ -287,18 +257,18 @@ if ($hasNavbarLayout) {
                                         <tr>
                                             <td>
                                                 <div class="fw-bold text-dark"><?php echo htmlspecialchars((string) ($cum['ten_tai_xe'] ?? ''), ENT_QUOTES, 'UTF-8'); ?></div>
-                                                <div class="text-muted" style="font-size: 0.72rem;"><?php echo htmlspecialchars((string) $cum['ma_cum_tuyen'], ENT_QUOTES, 'UTF-8'); ?></div>
+                                                <div class="text-muted" style="font-size: 0.72rem;"><?php echo htmlspecialchars((string) ($cum['ma_cum_tuyen'] ?? ''), ENT_QUOTES, 'UTF-8'); ?></div>
                                             </td>
-                                            <td class="text-center"><?php echo htmlspecialchars((string) $cum['so_don_hang'], ENT_QUOTES, 'UTF-8'); ?></td>
-                                            <td class="text-end text-muted"><?php echo htmlspecialchars(number_format((float) $cum['km_baseline'], 2), ENT_QUOTES, 'UTF-8'); ?></td>
-                                            <td class="text-end"><?php echo htmlspecialchars(number_format((float) $cum['km_nn'], 2), ENT_QUOTES, 'UTF-8'); ?></td>
-                                            <td class="text-end fw-bold text-success"><?php echo htmlspecialchars(number_format((float) $cum['km_toi_uu'], 2), ENT_QUOTES, 'UTF-8'); ?></td>
+                                            <td class="text-center"><?php echo htmlspecialchars((string) ($cum['so_don_hang'] ?? 0), ENT_QUOTES, 'UTF-8'); ?></td>
+                                            <td class="text-end text-muted"><?php echo htmlspecialchars(number_format((float) ($cum['km_baseline'] ?? 0), 2), ENT_QUOTES, 'UTF-8'); ?></td>
+                                            <td class="text-end"><?php echo htmlspecialchars(number_format((float) ($cum['km_nn'] ?? 0), 2), ENT_QUOTES, 'UTF-8'); ?></td>
+                                            <td class="text-end fw-bold text-success"><?php echo htmlspecialchars(number_format((float) ($cum['km_toi_uu'] ?? 0), 2), ENT_QUOTES, 'UTF-8'); ?></td>
                                             <td class="text-end">
                                                 <span class="badge bg-success-subtle text-success border">
-                                                    -<?php echo htmlspecialchars(number_format((float) $cum['ty_le_tiet_kiem_phan_tram'], 2), ENT_QUOTES, 'UTF-8'); ?>%
+                                                    -<?php echo htmlspecialchars(number_format((float) ($cum['ty_le_tiet_kiem_phan_tram'] ?? 0), 2), ENT_QUOTES, 'UTF-8'); ?>%
                                                 </span>
                                             </td>
-                                            <td class="text-end"><?php echo htmlspecialchars(number_format((float) $cum['thoi_gian_chay_ms'], 3), ENT_QUOTES, 'UTF-8'); ?></td>
+                                            <td class="text-end"><?php echo htmlspecialchars(number_format((float) ($cum['thoi_gian_chay_ms'] ?? 0), 3), ENT_QUOTES, 'UTF-8'); ?></td>
                                         </tr>
                                     <?php } ?>
                                 <?php } ?>
@@ -311,27 +281,6 @@ if ($hasNavbarLayout) {
     </div>
 </div>
 
-<!-- Truyền dữ liệu thống kê xuống file JS bieu_do.js -->
-<script>
-window.SPX_STATS_CONFIG = <?php echo json_encode([
-    'baseUrl' => $baseUrl,
-    'buuCuc' => $buuCuc,
-    'tongHop' => $tongHop,
-    'danhSachCum' => $danhSachCum,
-    'benchmark' => $benchmarkData,
-], JSON_UNESCAPED_UNICODE); ?>;
-</script>
-
 <?php
-if ($hasFooterLayout) {
-    require $layoutDir . '/footer.php';
-} else {
-?>
-<script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.3/dist/chart.umd.min.js"></script>
-<script src="<?php echo htmlspecialchars($baseUrl . '/assets/js/bieu_do.js', ENT_QUOTES, 'UTF-8'); ?>"></script>
-</body>
-</html>
-<?php
-}
+require dirname(__DIR__) . '/layouts/footer.php';
 ?>

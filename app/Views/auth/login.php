@@ -1,5 +1,8 @@
 <?php
 declare(strict_types=1);
+
+$csrfToken = isset($csrfToken) && is_string($csrfToken) ? $csrfToken : '';
+$loginError = isset($loginError) && is_string($loginError) ? $loginError : null;
 ?>
 <main class="container auth-container">
     <div class="row justify-content-center">
@@ -10,7 +13,7 @@ declare(strict_types=1);
                     <h1 class="h3 mb-2">Đăng nhập hệ thống</h1>
                     <p class="text-secondary mb-4">Dành cho điều phối viên và tài xế.</p>
 
-                    <?php if (is_string($loginError ?? null) && $loginError !== ''): ?>
+                    <?php if (is_string($loginError) && $loginError !== ''): ?>
                         <div class="alert alert-danger" role="alert"><?= htmlspecialchars($loginError, ENT_QUOTES, 'UTF-8') ?></div>
                     <?php endif; ?>
 
