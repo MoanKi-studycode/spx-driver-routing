@@ -2,6 +2,14 @@ CREATE DATABASE IF NOT EXISTS dinh_tuyen_spx
   CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
 USE dinh_tuyen_spx;
 
+SET FOREIGN_KEY_CHECKS = 0;
+DROP TABLE IF EXISTS don_hang;
+DROP TABLE IF EXISTS cum_tuyen_giao;
+DROP TABLE IF EXISTS nguoi_dung;
+DROP TABLE IF EXISTS phuong;
+DROP TABLE IF EXISTS buu_cuc;
+SET FOREIGN_KEY_CHECKS = 1;
+
 -- Bảng 1: buu_cuc (Cơ sở / Bưu cục phát hàng SPX & Cấp hành chính Tỉnh - Quận/Huyện)
 CREATE TABLE buu_cuc (
     id INT AUTO_INCREMENT PRIMARY KEY,
