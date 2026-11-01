@@ -1,10 +1,11 @@
 /**
  * ban_do_dieu_phoi.js
- * Quản lý bản đồ Leaflet màn hình Điều phối (/dieu-phoi):
- * - Hiển thị Bưu cục SPX (P0) kèm vòng tròn bán kính phục vụ (ban_kinh_phuc_vu_km)
- * - Hiển thị Tâm cụm K-Means (Centroid), các điểm giao hàng theo màu cụm (1..n)
- * - Bật/tắt so sánh trực quan đường Baseline (Chưa tối ưu) vs đường 2-Opt (Đã tối ưu)
- * - Tích hợp OpenStreetMap Nominatim Geocoding API & click chọn tọa độ trên bản đồ để sửa đơn lỗi
+ * Quản lý Trung tâm Điều phối & Bản đồ Giám sát Tuyến Giao Hàng (/dieu-phoi):
+ * - Vẽ lộ trình thực tế bám theo mặt đường giao thông bằng OSRM Routing API (thay vì nối thẳng chim bay)
+ * - Hiển thị trạng thái thực tế của từng điểm giao hàng: Đang chờ giao (1..n), Đã giao thành công (✓), Giao thất bại (✕)
+ * - Hiển thị vị trí GPS hiện tại của tài xế nếu tài xế đã cập nhật vị trí trên ứng dụng
+ * - Đồng bộ Bảng giám sát toàn bộ đơn hàng theo thời gian thực với bộ lọc theo Tuyến/Tài xế và Trạng thái
+ * - Hỗ trợ tra cứu tọa độ Nominatim API & chấm chọn tọa độ trên bản đồ cho đơn sai địa chỉ
  */
 (function () {
     'use strict';
@@ -15,7 +16,7 @@
             try {
                 return JSON.parse(configEl.dataset.config);
             } catch (e) {
-                // ignore parse error and fallback
+                // fallback below
             }
         }
         return window.SPX_DISPATCH_CONFIG || {};
@@ -24,6 +25,8 @@
     const config = loadDispatchConfig();
     const baseUrl = config.baseUrl || '/dinh-tuyen-spx/public';
     const nominatimBaseUrl = (config.nominatimBaseUrl || 'https://nominatim.openstreetmap.org').replace(/\/+$/, '');
+    const osrmBaseUrl = (config.osrmBaseUrl || 'https://router.project-osrm.org').replace(/\/+$/, '');
+
     let buuCuc = config.buuCuc || {
         id: 1,
         ten_buu_cuc: 'Bưu cục SPX Nha Trang',
@@ -46,6 +49,10 @@
     let routeBaselineLayerGroup = null;
     let errorMarkersLayerGroup = null;
     let tempPickMarker = null;
+
+    // Lưu cache đường đi thực tế OSRM theo từng cụm để chuyển chế độ xem mượt mà
+    const osrmGeometryCache = {};
+    let renderGeneration = 0;
 
     let currentRouteMode = '2opt'; // '2opt' | 'baseline' | 'both'
     let pickingOrderId = null;
@@ -125,12 +132,64 @@
         });
 
         renderAllMapLayers(true);
+        renderAllClusterOrdersTable();
+    }
+
+    /**
+     * Lấy đường đi thực tế theo mặt đường bộ từ OSRM cho danh sách tọa độ [[lat, lng], ...]
+     */
+    async function fetchOsrmStreetGeometry(cacheKey, latLngPoints) {
+        if (osrmGeometryCache[cacheKey]) {
+            return osrmGeometryCache[cacheKey];
+        }
+        if (!Array.isArray(latLngPoints) || latLngPoints.length < 2) {
+            return null;
+        }
+
+        const coordString = latLngPoints
+            .map(function (pt) {
+                return Number(pt[1]).toFixed(6) + ',' + Number(pt[0]).toFixed(6);
+            })
+            .join(';');
+
+        const controller = new AbortController();
+        const timer = setTimeout(function () {
+            controller.abort();
+        }, 5000);
+
+        try {
+            const url = osrmBaseUrl + '/route/v1/driving/' + coordString + '?overview=full&geometries=geojson&steps=false';
+            const response = await fetch(url, { signal: controller.signal });
+            clearTimeout(timer);
+
+            if (!response.ok) {
+                return null;
+            }
+            const data = await response.json();
+            const rawCoords = data && data.routes && data.routes[0] && data.routes[0].geometry
+                ? data.routes[0].geometry.coordinates
+                : null;
+
+            if (Array.isArray(rawCoords) && rawCoords.length > 1) {
+                const streetLatLngs = rawCoords.map(function (pair) {
+                    return [Number(pair[1]), Number(pair[0])];
+                });
+                osrmGeometryCache[cacheKey] = streetLatLngs;
+                return streetLatLngs;
+            }
+        } catch (e) {
+            clearTimeout(timer);
+        }
+
+        return null;
     }
 
     function renderAllMapLayers(shouldFitBounds) {
         if (!map) {
             return;
         }
+
+        const currentGen = ++renderGeneration;
 
         depotLayerGroup.clearLayers();
         centroidLayerGroup.clearLayers();
@@ -157,7 +216,7 @@
             '<div style="min-width:210px;">' +
             '<strong style="color:#ee4d2d;">' + escapeHtml(buuCuc.ten_buu_cuc) + ' (P0)</strong><br>' +
             '<small>' + escapeHtml(buuCuc.dia_chi || '') + '</small><br>' +
-            '<span class="badge bg-secondary mt-1">Bán kính phục vụ: ' + Number(buuCuc.ban_kinh_phuc_vu_km || 25).toFixed(1) + ' km</span>' +
+            '<span class="badge bg-secondary mt-1">Phạm vi phục vụ: ' + Number(buuCuc.ban_kinh_phuc_vu_km || 25).toFixed(1) + ' km</span>' +
             '</div>'
         );
         depotMarker.addTo(depotLayerGroup);
@@ -169,44 +228,69 @@
             weight: 1.5,
             dashArray: '6, 6',
             fillColor: '#ee4d2d',
-            fillOpacity: 0.03,
+            fillOpacity: 0.02,
             interactive: false
         }).addTo(depotLayerGroup);
 
-        // 2. Vẽ từng cụm K-Means: Tâm cụm (Centroid), điểm giao hàng (1..n), đường Baseline & đường 2-Opt
+        // 2. Vẽ từng tuyến giao hàng của Tài xế
         danhSachCum.forEach(function (cluster) {
             const color = cluster.mau_sac_cum || '#2563eb';
             const cLat = Number(cluster.vi_do_tam_cum);
             const cLng = Number(cluster.kinh_do_tam_cum);
-            const startLat = Number(cluster.vi_do_xuat_phat || p0Lat);
-            const startLng = Number(cluster.kinh_do_xuat_phat || p0Lng);
+            const depotStartLat = Number(cluster.vi_do_xuat_phat || p0Lat);
+            const depotStartLng = Number(cluster.kinh_do_xuat_phat || p0Lng);
 
-            if (!Number.isNaN(cLat) && !Number.isNaN(cLng)) {
-                const centroidIcon = L.divIcon({
-                    className: 'spx-centroid-marker',
-                    html: '<div style="background:' + escapeHtml(color) + ';color:#fff;width:30px;height:30px;border-radius:6px;transform:rotate(45deg);display:flex;align-items:center;justify-content:center;border:2px solid #fff;box-shadow:0 2px 6px rgba(0,0,0,0.3);"><span style="transform:rotate(-45deg);font-size:14px;font-weight:bold;">★</span></div>',
+            // Nếu tài xế đã cập nhật vị trí GPS thực tế thì hiển thị xe tải của tài xế trên bản đồ Điều phối
+            const hasDriverGps = cluster.tai_xe_vi_do !== null && cluster.tai_xe_vi_do !== undefined
+                && cluster.tai_xe_kinh_do !== null && cluster.tai_xe_kinh_do !== undefined
+                && !Number.isNaN(Number(cluster.tai_xe_vi_do)) && !Number.isNaN(Number(cluster.tai_xe_kinh_do));
+
+            if (hasDriverGps) {
+                const dLat = Number(cluster.tai_xe_vi_do);
+                const dLng = Number(cluster.tai_xe_kinh_do);
+                const truckIcon = L.divIcon({
+                    className: 'spx-driver-live-marker',
+                    html: '<div style="background:' + escapeHtml(color) + ';color:#fff;width:30px;height:30px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:14px;border:2px solid #fff;box-shadow:0 2px 6px rgba(0,0,0,0.4);">🚚</div>',
                     iconSize: [30, 30],
                     iconAnchor: [15, 15]
                 });
+                L.marker([dLat, dLng], { icon: truckIcon, zIndexOffset: 950 })
+                    .bindPopup(
+                        '<div>' +
+                        '<strong>Vị trí tài xế: ' + escapeHtml(cluster.ten_tai_xe) + '</strong><br>' +
+                        'Tuyến: <code>' + escapeHtml(cluster.ma_cum_tuyen) + '</code><br>' +
+                        'Tọa độ GPS: ' + dLat.toFixed(5) + ', ' + dLng.toFixed(5) +
+                        '</div>'
+                    )
+                    .addTo(centroidLayerGroup);
+            } else if (!Number.isNaN(cLat) && !Number.isNaN(cLng)) {
+                const centroidIcon = L.divIcon({
+                    className: 'spx-centroid-marker',
+                    html: '<div style="background:' + escapeHtml(color) + ';color:#fff;width:26px;height:26px;border-radius:6px;transform:rotate(45deg);display:flex;align-items:center;justify-content:center;border:2px solid #fff;box-shadow:0 2px 5px rgba(0,0,0,0.3);"><span style="transform:rotate(-45deg);font-size:12px;font-weight:bold;">★</span></div>',
+                    iconSize: [26, 26],
+                    iconAnchor: [13, 13]
+                });
 
-                const centroidMarker = L.marker([cLat, cLng], { icon: centroidIcon, zIndexOffset: 800 });
+                const centroidMarker = L.marker([cLat, cLng], { icon: centroidIcon, zIndexOffset: 750 });
                 centroidMarker.bindPopup(
                     '<div>' +
-                    '<strong>Tâm cụm K-Means (Centroid)</strong><br>' +
-                    'Cụm: <code>' + escapeHtml(cluster.ma_cum_tuyen) + '</code><br>' +
+                    '<strong>Tâm khu vực giao hàng</strong><br>' +
                     'Tài xế: <strong>' + escapeHtml(cluster.ten_tai_xe) + '</strong><br>' +
-                    'Tọa độ tâm: ' + cLat.toFixed(5) + ', ' + cLng.toFixed(5) + '<br>' +
-                    'Số đơn: ' + Number(cluster.so_don_hang) + ' đơn<br>' +
-                    'Baseline: ' + Number(cluster.km_baseline).toFixed(2) + ' km &rarr; 2-Opt: <strong>' + Number(cluster.km_toi_uu).toFixed(2) + ' km</strong> (-' + Number(cluster.ty_le_tiet_kiem_phan_tram).toFixed(1) + '%)' +
+                    'Mã tuyến: <code>' + escapeHtml(cluster.ma_cum_tuyen) + '</code><br>' +
+                    'Tiến độ: Đã giao ' + Number(cluster.so_don_da_giao || 0) + '/' + Number(cluster.so_don_hang) + ' đơn<br>' +
+                    'Quãng đường tối ưu: <strong>' + Number(cluster.km_toi_uu).toFixed(2) + ' km</strong> (Tiết kiệm ' + Number(cluster.ty_le_tiet_kiem_phan_tram).toFixed(1) + '%)' +
                     '</div>'
                 );
                 centroidMarker.addTo(centroidLayerGroup);
-                boundsPoints.push([cLat, cLng]);
             }
 
-            // Danh sách đơn theo thứ tự 2-Opt
+            // Danh sách đơn trong cụm
             const orders2Opt = Array.isArray(cluster.don_hang_toi_uu) ? cluster.don_hang_toi_uu : [];
-            const coords2Opt = [[startLat, startLng]];
+            const routeStartLat = hasDriverGps ? Number(cluster.tai_xe_vi_do) : depotStartLat;
+            const routeStartLng = hasDriverGps ? Number(cluster.tai_xe_kinh_do) : depotStartLng;
+            const activeCoords2Opt = [[routeStartLat, routeStartLng]];
+
+            let pendingStopCounter = 0;
 
             orders2Opt.forEach(function (order, index) {
                 const oLat = Number(order.vi_do);
@@ -214,42 +298,89 @@
                 if (Number.isNaN(oLat) || Number.isNaN(oLng)) {
                     return;
                 }
-                const seq = order.thu_tu_giao || (index + 1);
-                coords2Opt.push([oLat, oLng]);
                 boundsPoints.push([oLat, oLng]);
+
+                const status = order.trang_thai || 'da_phan_cong';
+                const isPending = status === 'da_phan_cong';
+                const isDelivered = status === 'giao_thanh_cong';
+                const isFailed = status === 'giao_that_bai';
+
+                let seqLabel = String(order.thu_tu_giao || (index + 1));
+                let markerBg = color;
+                let statusBadgeHtml = '<span class="badge bg-primary">Đang chờ giao (Điểm #' + escapeHtml(seqLabel) + ')</span>';
+
+                if (isPending) {
+                    pendingStopCounter++;
+                    seqLabel = String(pendingStopCounter);
+                    activeCoords2Opt.push([oLat, oLng]);
+                } else if (isDelivered) {
+                    seqLabel = '✓';
+                    markerBg = '#16a34a';
+                    statusBadgeHtml = '<span class="badge bg-success">Đã giao thành công</span>';
+                } else if (isFailed) {
+                    seqLabel = '✕';
+                    markerBg = '#64748b';
+                    statusBadgeHtml = '<span class="badge bg-danger">Giao thất bại: ' + escapeHtml(order.ly_do_that_bai || '') + '</span>';
+                }
 
                 const orderIcon = L.divIcon({
                     className: 'spx-order-marker',
-                    html: '<div style="background:' + escapeHtml(color) + ';color:#fff;width:24px;height:24px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:bold;border:2px solid #fff;box-shadow:0 1px 4px rgba(0,0,0,0.35);">' + escapeHtml(seq) + '</div>',
-                    iconSize: [24, 24],
+                    html: '<div style="background:' + escapeHtml(markerBg) + ';color:#fff;width:25px;height:25px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:bold;border:2px solid #fff;box-shadow:0 1px 4px rgba(0,0,0,0.35);">' + escapeHtml(seqLabel) + '</div>',
+                    iconSize: [25, 25],
                     iconAnchor: [12, 12]
                 });
 
-                const marker = L.marker([oLat, oLng], { icon: orderIcon });
+                const marker = L.marker([oLat, oLng], {
+                    icon: orderIcon,
+                    zIndexOffset: isPending ? 600 : 300
+                });
                 marker.bindPopup(
-                    '<div style="min-width:220px;">' +
-                    '<div class="fw-bold" style="color:' + escapeHtml(color) + ';">Điểm dừng #' + escapeHtml(seq) + ' - ' + escapeHtml(order.ma_van_don) + '</div>' +
-                    '<div><strong>Khách:</strong> ' + escapeHtml(order.ten_khach_hang) + ' (' + escapeHtml(order.so_dien_thoai_khach || '') + ')</div>' +
+                    '<div style="min-width:230px;">' +
+                    '<div class="d-flex justify-content-between align-items-center mb-1">' +
+                    '<strong style="color:' + escapeHtml(color) + ';">' + escapeHtml(order.ma_van_don) + '</strong>' +
+                    statusBadgeHtml +
+                    '</div>' +
+                    '<div><strong>Khách hàng:</strong> ' + escapeHtml(order.ten_khach_hang) + ' (' + escapeHtml(order.so_dien_thoai_khach || '') + ')</div>' +
                     '<div><strong>Địa chỉ:</strong> ' + escapeHtml(order.dia_chi_giao_hang) + '</div>' +
-                    '<div><strong>Phường:</strong> ' + escapeHtml(order.ten_phuong || order.phuong_ten_goc || '') + '</div>' +
+                    '<div><strong>Phường/Xã:</strong> ' + escapeHtml(order.ten_phuong || order.phuong_ten_goc || '') + '</div>' +
                     '<div><strong>Thu hộ COD:</strong> <span class="text-danger fw-bold">' + formatCurrency(order.tien_thu_ho) + '</span></div>' +
-                    '<div><strong>Tài xế:</strong> ' + escapeHtml(cluster.ten_tai_xe) + '</div>' +
+                    '<div><strong>Tài xế phụ trách:</strong> ' + escapeHtml(cluster.ten_tai_xe) + '</div>' +
                     '</div>'
                 );
                 marker.addTo(orderMarkersLayerGroup);
             });
 
-            if (coords2Opt.length > 1 && (currentRouteMode === '2opt' || currentRouteMode === 'both')) {
-                L.polyline(coords2Opt, {
+            // Vẽ tuyến đường tối ưu theo mặt đường giao thông thực tế (OSRM)
+            if (activeCoords2Opt.length > 1 && (currentRouteMode === '2opt' || currentRouteMode === 'both')) {
+                const fallbackLine = L.polyline(activeCoords2Opt, {
                     color: color,
-                    weight: 4,
-                    opacity: 0.9
+                    weight: 3.5,
+                    opacity: 0.55,
+                    dashArray: '4, 6'
                 }).addTo(route2OptLayerGroup);
+
+                const cacheKey = 'cluster_' + cluster.id + '_' + activeCoords2Opt.map(function (p) {
+                    return p[0].toFixed(5) + ',' + p[1].toFixed(5);
+                }).join('|');
+
+                fetchOsrmStreetGeometry(cacheKey, activeCoords2Opt).then(function (streetLatLngs) {
+                    if (currentGen !== renderGeneration || !streetLatLngs) {
+                        return;
+                    }
+                    if (route2OptLayerGroup.hasLayer(fallbackLine)) {
+                        route2OptLayerGroup.removeLayer(fallbackLine);
+                    }
+                    L.polyline(streetLatLngs, {
+                        color: color,
+                        weight: 4.5,
+                        opacity: 0.9
+                    }).addTo(route2OptLayerGroup);
+                });
             }
 
-            // Danh sách đơn theo thứ tự Baseline (thu_tu_file ASC)
+            // Vẽ đường thứ tự đơn gốc chưa tối ưu (Baseline) khi người dùng bật đối chiếu
             const ordersBaseline = Array.isArray(cluster.don_hang_baseline) ? cluster.don_hang_baseline : [];
-            const coordsBaseline = [[startLat, startLng]];
+            const coordsBaseline = [[depotStartLat, depotStartLng]];
             ordersBaseline.forEach(function (order) {
                 const oLat = Number(order.vi_do);
                 const oLng = Number(order.kinh_do);
@@ -268,7 +399,7 @@
             }
         });
 
-        // 3. Vẽ các đơn lỗi có tọa độ trên bản đồ (VD: đơn vượt quá bán kính phục vụ 25km)
+        // 3. Vẽ các đơn lỗi tọa độ trên bản đồ
         danhSachDonLoi.forEach(function (errOrder) {
             if (errOrder.vi_do === null || errOrder.kinh_do === null || errOrder.vi_do === '' || errOrder.kinh_do === '') {
                 return;
@@ -289,8 +420,8 @@
             const errMarker = L.marker([eLat, eLng], { icon: errIcon, zIndexOffset: 900 });
             errMarker.bindPopup(
                 '<div style="min-width:210px;">' +
-                '<strong class="text-danger">Đơn ngoại lệ: ' + escapeHtml(errOrder.ma_van_don) + '</strong><br>' +
-                '<strong>Lý do:</strong> ' + escapeHtml(errOrder.ly_do_chua_phan_cong) + '<br>' +
+                '<strong class="text-danger">Đơn cần xác minh địa chỉ: ' + escapeHtml(errOrder.ma_van_don) + '</strong><br>' +
+                '<strong>Khách hàng:</strong> ' + escapeHtml(errOrder.ten_khach_hang || '') + '<br>' +
                 '<strong>Địa chỉ:</strong> ' + escapeHtml(errOrder.dia_chi_giao_hang) + '<br>' +
                 '<strong>Tọa độ hiện tại:</strong> ' + eLat.toFixed(5) + ', ' + eLng.toFixed(5) +
                 '</div>'
@@ -301,6 +432,72 @@
         if (shouldFitBounds && boundsPoints.length > 1) {
             map.fitBounds(boundsPoints, { padding: [35, 35], maxZoom: 15 });
         }
+    }
+
+    /**
+     * Hiển thị bảng giám sát chi tiết tất cả các đơn hàng trong các tuyến giao (Đồng bộ trạng thái từ tài xế)
+     */
+    function renderAllClusterOrdersTable() {
+        const tbody = document.getElementById('tbody-tat-ca-don-cum');
+        if (!tbody) {
+            return;
+        }
+
+        const filterClusterEl = document.getElementById('filter-cluster-orders');
+        const filterStatusEl = document.getElementById('filter-status-orders');
+        const selectedClusterId = filterClusterEl ? filterClusterEl.value : 'all';
+        const selectedStatus = filterStatusEl ? filterStatusEl.value : 'all';
+
+        const flatOrders = [];
+        danhSachCum.forEach(function (cum) {
+            if (selectedClusterId !== 'all' && Number(cum.id) !== Number(selectedClusterId)) {
+                return;
+            }
+            const list = Array.isArray(cum.don_hang_toi_uu) ? cum.don_hang_toi_uu : [];
+            list.forEach(function (o) {
+                const st = o.trang_thai || 'da_phan_cong';
+                if (selectedStatus !== 'all' && st !== selectedStatus) {
+                    return;
+                }
+                flatOrders.push({
+                    order: o,
+                    cluster: cum
+                });
+            });
+        });
+
+        if (flatOrders.length === 0) {
+            tbody.innerHTML = '<tr><td colspan="7" class="text-center text-muted py-4">Không có đơn hàng nào khớp với bộ lọc hiện tại.</td></tr>';
+            return;
+        }
+
+        tbody.innerHTML = flatOrders.map(function (entry) {
+            const o = entry.order;
+            const cum = entry.cluster;
+            const color = escapeHtml(cum.mau_sac_cum || '#2563eb');
+            const st = o.trang_thai || 'da_phan_cong';
+
+            let statusHtml = '<span class="badge bg-primary-subtle text-primary border"><i class="bi bi-clock-history me-1"></i>Đang chờ giao</span>';
+            if (st === 'giao_thanh_cong') {
+                const timeNote = o.thoi_gian_giao ? ('<div class="text-muted mt-1" style="font-size:0.7rem;">Lúc: ' + escapeHtml(o.thoi_gian_giao) + '</div>') : '';
+                statusHtml = '<span class="badge bg-success-subtle text-success border"><i class="bi bi-check-circle-fill me-1"></i>Đã giao thành công</span>' + timeNote;
+            } else if (st === 'giao_that_bai') {
+                const reasonNote = o.ly_do_that_bai ? ('<div class="text-danger mt-1" style="font-size:0.72rem;">Lý do: ' + escapeHtml(o.ly_do_that_bai) + '</div>') : '';
+                statusHtml = '<span class="badge bg-danger-subtle text-danger border"><i class="bi bi-x-circle-fill me-1"></i>Giao thất bại</span>' + reasonNote;
+            }
+
+            return (
+                '<tr data-order-lat="' + escapeHtml(o.vi_do) + '" data-order-lng="' + escapeHtml(o.kinh_do) + '" style="cursor:pointer;" class="row-dispatch-order-item">' +
+                '<td class="text-center"><span class="badge rounded-pill" style="background:' + color + ';">#' + escapeHtml(o.thu_tu_giao || '-') + '</span></td>' +
+                '<td class="fw-bold text-nowrap">' + escapeHtml(o.ma_van_don) + '</td>' +
+                '<td><div class="fw-semibold text-dark">' + escapeHtml(o.ten_khach_hang) + '</div><div class="text-muted">' + escapeHtml(o.so_dien_thoai_khach || '') + '</div></td>' +
+                '<td><div>' + escapeHtml(o.dia_chi_giao_hang) + '</div><div class="text-muted" style="font-size:0.72rem;">' + escapeHtml(o.ten_phuong || o.phuong_ten_goc || '') + '</div></td>' +
+                '<td class="text-end fw-semibold text-danger">' + formatCurrency(o.tien_thu_ho) + '</td>' +
+                '<td><div class="d-flex align-items-center gap-1"><span class="d-inline-block rounded-circle" style="width:10px;height:10px;background:' + color + ';"></span><span class="fw-semibold">' + escapeHtml(cum.ten_tai_xe) + '</span></div><div class="text-muted" style="font-size:0.7rem;">' + escapeHtml(cum.ma_cum_tuyen) + '</div></td>' +
+                '<td>' + statusHtml + '</td>' +
+                '</tr>'
+            );
+        }).join('');
     }
 
     function setRouteMode(mode) {
@@ -337,6 +534,12 @@
         });
         if (!target) {
             return;
+        }
+
+        const filterClusterEl = document.getElementById('filter-cluster-orders');
+        if (filterClusterEl) {
+            filterClusterEl.value = String(Number(clusterId));
+            renderAllClusterOrdersTable();
         }
 
         const pts = [[Number(buuCuc.vi_do), Number(buuCuc.kinh_do)]];
@@ -469,7 +672,7 @@
                 }
                 showAlert('info', 'Đã điền tọa độ gợi ý theo tâm Phường/Xã phục vụ (bạn có thể tinh chỉnh thêm trên bản đồ).');
             } else {
-                showAlert('success', 'Đã tìm thấy tọa độ từ OpenStreetMap Nominatim API: (' + foundLat + ', ' + foundLng + ').');
+                showAlert('success', 'Đã tìm thấy tọa độ từ bản đồ OpenStreetMap: (' + foundLat + ', ' + foundLng + ').');
             }
 
             if (latInput) {
@@ -484,7 +687,7 @@
                     map.removeLayer(tempPickMarker);
                 }
                 tempPickMarker = L.marker([Number(foundLat), Number(foundLng)]).addTo(map);
-                tempPickMarker.bindPopup('Tọa độ gợi ý Nominatim: ' + foundLat + ', ' + foundLng).openPopup();
+                tempPickMarker.bindPopup('Tọa độ gợi ý: ' + foundLat + ', ' + foundLng).openPopup();
                 map.setView([Number(foundLat), Number(foundLng)], 15);
             }
         } catch (err) {
@@ -495,11 +698,11 @@
                 if (wLat && wLng && latInput && lngInput) {
                     latInput.value = Number(wLat).toFixed(7);
                     lngInput.value = Number(wLng).toFixed(7);
-                    showAlert('info', 'Nominatim API phản hồi chậm, hệ thống đã gợi ý tọa độ tâm Phường đã chọn.');
+                    showAlert('info', 'Đã gợi ý tọa độ theo tâm Phường/Xã đã chọn.');
                     return;
                 }
             }
-            showAlert('warning', 'Không thể kết nối Nominatim API. Bạn có thể bấm nút "Chấm bản đồ" để chọn vị trí trực tiếp.');
+            showAlert('warning', 'Không thể kết nối dịch vụ tìm địa chỉ. Bạn có thể bấm nút "Chấm bản đồ" để chọn vị trí trực tiếp.');
         } finally {
             if (buttonEl) {
                 buttonEl.disabled = false;
@@ -513,7 +716,7 @@
         const originalHtml = btn ? btn.innerHTML : '';
         if (btn) {
             btn.disabled = true;
-            btn.innerHTML = '<span class="spinner-border spinner-border-sm me-2"></span>Đang đồng bộ &amp; chạy K-Means + 2-Opt...';
+            btn.innerHTML = '<span class="spinner-border spinner-border-sm me-2"></span>Đang đồng bộ đơn Shopee &amp; chia tuyến...';
         }
 
         try {
@@ -530,7 +733,7 @@
 
             const res = await response.json();
             if (!response.ok || !res.thanh_cong) {
-                showAlert('danger', res.thong_bao || 'Có lỗi xảy ra khi phân cụm đơn hàng.');
+                showAlert('danger', res.thong_bao || 'Có lỗi xảy ra khi đồng bộ và chia tuyến đơn hàng.');
                 return;
             }
 
@@ -540,9 +743,10 @@
                 danhSachDonLoi = Array.isArray(res.du_lieu.danh_sach_don_loi) ? res.du_lieu.danh_sach_don_loi : danhSachDonLoi;
                 refreshTablesAndKpis();
                 renderAllMapLayers(true);
+                renderAllClusterOrdersTable();
             }
         } catch (error) {
-            showAlert('danger', 'Lỗi kết nối máy chủ khi chạy phân cụm K-Means.');
+            showAlert('danger', 'Lỗi kết nối máy chủ khi đồng bộ và chia tuyến đơn hàng.');
         } finally {
             if (btn) {
                 btn.disabled = false;
@@ -572,7 +776,7 @@
             return;
         }
         if (viDo === '' || kinhDo === '') {
-            showAlert('warning', 'Vui lòng nhập tọa độ hoặc bấm nút "Nominatim" / "Chấm bản đồ".');
+            showAlert('warning', 'Vui lòng nhập tọa độ hoặc bấm nút "Tìm tọa độ" / "Chấm bản đồ".');
             return;
         }
 
@@ -603,7 +807,7 @@
 
             const res = await response.json();
             if (!response.ok || !res.thanh_cong) {
-                showAlert('danger', res.thong_bao || 'Không thể cập nhật đơn hàng lỗi.');
+                showAlert('danger', res.thong_bao || 'Không thể cập nhật đơn hàng.');
                 return;
             }
 
@@ -618,9 +822,10 @@
                 danhSachDonLoi = Array.isArray(res.du_lieu.danh_sach_don_loi) ? res.du_lieu.danh_sach_don_loi : [];
                 refreshTablesAndKpis();
                 renderAllMapLayers(false);
+                renderAllClusterOrdersTable();
             }
         } catch (err) {
-            showAlert('danger', 'Lỗi kết nối máy chủ khi cập nhật đơn hàng lỗi.');
+            showAlert('danger', 'Lỗi kết nối máy chủ khi cập nhật đơn hàng.');
         } finally {
             if (buttonEl) {
                 buttonEl.disabled = false;
@@ -631,10 +836,22 @@
 
     function refreshTablesAndKpis() {
         let totalOrders = 0;
+        let totalPending = 0;
+        let totalDelivered = 0;
+        let totalFailed = 0;
         let totalBaseline = 0;
         let totalToiUu = 0;
+
         danhSachCum.forEach(function (c) {
-            totalOrders += Number(c.so_don_hang || 0);
+            const soDon = Number(c.so_don_hang || 0);
+            const daGiao = Number(c.so_don_da_giao || 0);
+            const thatBai = Number(c.so_don_that_bai || 0);
+            const dangCho = c.so_don_dang_cho !== undefined ? Number(c.so_don_dang_cho) : Math.max(0, soDon - daGiao - thatBai);
+
+            totalOrders += soDon;
+            totalPending += dangCho;
+            totalDelivered += daGiao;
+            totalFailed += thatBai;
             totalBaseline += Number(c.km_baseline || 0);
             totalToiUu += Number(c.km_toi_uu || 0);
         });
@@ -642,22 +859,29 @@
 
         const kpiSoCum = document.getElementById('kpi-so-cum');
         const kpiSoDon = document.getElementById('kpi-so-don-phan-cum');
+        const kpiTienDo = document.getElementById('kpi-tien-do-chi-tiet');
         const kpiQuangDuong = document.getElementById('kpi-quang-duong');
         const kpiTietKiem = document.getElementById('kpi-tiet-kiem');
         const kpiDonLoi = document.getElementById('kpi-so-don-loi');
         const badgeDonLoi = document.getElementById('badge-count-don-loi');
 
         if (kpiSoCum) {
-            kpiSoCum.textContent = danhSachCum.length + ' cụm';
+            kpiSoCum.textContent = danhSachCum.length + ' tuyến hoạt động';
         }
         if (kpiSoDon) {
-            kpiSoDon.textContent = totalOrders + ' đơn';
+            kpiSoDon.textContent = totalOrders + ' đơn trong tuyến';
+        }
+        if (kpiTienDo) {
+            kpiTienDo.innerHTML =
+                '<span class="text-primary fw-semibold">Đang giao: ' + totalPending + '</span> &bull; ' +
+                '<span class="text-success fw-semibold">Đã giao: ' + totalDelivered + '</span> &bull; ' +
+                '<span class="text-danger fw-semibold">Thất bại: ' + totalFailed + '</span>';
         }
         if (kpiQuangDuong) {
-            kpiQuangDuong.textContent = totalBaseline.toFixed(2) + ' km → ' + totalToiUu.toFixed(2) + ' km';
+            kpiQuangDuong.textContent = totalToiUu.toFixed(2) + ' km (Gốc: ' + totalBaseline.toFixed(2) + ' km)';
         }
         if (kpiTietKiem) {
-            kpiTietKiem.textContent = 'Tiết kiệm: ' + savingPct.toFixed(2) + '%';
+            kpiTietKiem.textContent = 'Tiết kiệm quãng đường: ' + savingPct.toFixed(2) + '%';
         }
         if (kpiDonLoi) {
             kpiDonLoi.textContent = danhSachDonLoi.length + ' đơn';
@@ -666,42 +890,60 @@
             badgeDonLoi.textContent = danhSachDonLoi.length + ' đơn cần xử lý';
         }
 
+        // Cập nhật dropdown lọc tuyến
+        const filterClusterEl = document.getElementById('filter-cluster-orders');
+        if (filterClusterEl) {
+            const currentVal = filterClusterEl.value || 'all';
+            filterClusterEl.innerHTML = ['<option value="all">Tất cả các tuyến / tài xế</option>'].concat(
+                danhSachCum.map(function (c) {
+                    const sel = String(c.id) === String(currentVal) ? 'selected' : '';
+                    return '<option value="' + Number(c.id) + '" ' + sel + '>' + escapeHtml(c.ten_tai_xe) + ' (' + escapeHtml(c.ma_cum_tuyen) + ')</option>';
+                })
+            ).join('');
+        }
+
         const tbodyCum = document.getElementById('tbody-cum-tuyen');
         if (tbodyCum) {
             if (danhSachCum.length === 0) {
-                tbodyCum.innerHTML = '<tr><td colspan="5" class="text-center text-muted py-4">Chưa có cụm tuyến nào.</td></tr>';
+                tbodyCum.innerHTML = '<tr><td colspan="5" class="text-center text-muted py-4">Chưa có tuyến giao hàng nào.</td></tr>';
             } else {
-                const maxCap = Number(buuCuc.suc_chua_moi_cum || 20);
                 tbodyCum.innerHTML = danhSachCum.map(function (cum) {
                     const color = escapeHtml(cum.mau_sac_cum || '#2563eb');
-                    const phuongNote = cum.ten_phuong_uu_tien ? (' &bull; Ưu tiên: ' + escapeHtml(cum.ten_phuong_uu_tien)) : '';
+                    const phuongNote = cum.ten_phuong_uu_tien ? ('Khu vực: <strong>' + escapeHtml(cum.ten_phuong_uu_tien) + '</strong> &bull; ') : '';
+                    const soDon = Number(cum.so_don_hang || 0);
+                    const daGiao = Number(cum.so_don_da_giao || 0);
+                    const thatBai = Number(cum.so_don_that_bai || 0);
+                    const dangCho = cum.so_don_dang_cho !== undefined ? Number(cum.so_don_dang_cho) : Math.max(0, soDon - daGiao - thatBai);
+                    const isCompleted = cum.trang_thai === 'hoan_tat';
+
                     return (
                         '<tr data-cluster-id="' + Number(cum.id) + '">' +
                         '<td>' +
                         '<div class="d-flex align-items-center gap-2">' +
-                        '<span class="d-inline-block rounded-circle" style="width:12px;height:12px;background-color:' + color + ';"></span>' +
+                        '<span class="d-inline-block rounded-circle flex-shrink-0" style="width:12px;height:12px;background-color:' + color + ';"></span>' +
                         '<div>' +
                         '<div class="fw-bold text-dark">' + escapeHtml(cum.ten_tai_xe || '') + '</div>' +
-                        '<div class="text-muted" style="font-size:0.75rem;">' + escapeHtml(cum.ma_cum_tuyen) + phuongNote + '</div>' +
-                        '<div class="text-secondary" style="font-size:0.72rem;">Tâm cụm: (' + Number(cum.vi_do_tam_cum).toFixed(4) + ', ' + Number(cum.kinh_do_tam_cum).toFixed(4) + ')</div>' +
+                        '<div class="text-muted" style="font-size:0.75rem;">' + phuongNote + 'Mã tuyến: ' + escapeHtml(cum.ma_cum_tuyen) + '</div>' +
                         '</div>' +
                         '</div>' +
                         '</td>' +
                         '<td class="text-center">' +
-                        '<span class="badge bg-primary-subtle text-primary border">' + Number(cum.so_don_hang) + ' / ' + maxCap + '</span>' +
-                        '<div class="text-muted mt-1" style="font-size:0.72rem;">Đã giao: ' + Number(cum.so_don_da_giao || 0) + '</div>' +
+                        '<div class="mb-1"><span class="badge ' + (isCompleted ? 'bg-success' : 'bg-primary-subtle text-primary border') + '">' + soDon + ' đơn' + (isCompleted ? ' (Hoàn tất)' : '') + '</span></div>' +
+                        '<div style="font-size:0.73rem;">' +
+                        '<span class="text-success fw-semibold">&check; ' + daGiao + '</span> &bull; ' +
+                        '<span class="text-primary fw-semibold">Chờ: ' + dangCho + '</span>' +
+                        (thatBai > 0 ? (' &bull; <span class="text-danger fw-semibold">&times; ' + thatBai + '</span>') : '') +
+                        '</div>' +
                         '</td>' +
                         '<td class="text-end">' +
-                        '<div class="text-decoration-line-through text-muted" style="font-size:0.75rem;">' + Number(cum.km_baseline).toFixed(2) + ' km</div>' +
                         '<div class="fw-bold text-dark">' + Number(cum.km_toi_uu).toFixed(2) + ' km</div>' +
-                        '<div class="text-muted" style="font-size:0.7rem;">NN: ' + Number(cum.km_nn).toFixed(2) + ' km</div>' +
+                        '<div class="text-decoration-line-through text-muted" style="font-size:0.72rem;">Gốc: ' + Number(cum.km_baseline).toFixed(2) + ' km</div>' +
                         '</td>' +
                         '<td class="text-end">' +
                         '<span class="badge bg-success-subtle text-success border">-' + Number(cum.ty_le_tiet_kiem_phan_tram).toFixed(1) + '%</span>' +
-                        '<div class="text-muted mt-1" style="font-size:0.7rem;">' + Number(cum.thoi_gian_chay_ms).toFixed(2) + ' ms</div>' +
                         '</td>' +
                         '<td class="text-center">' +
-                        '<button type="button" class="btn btn-sm btn-outline-primary btn-focus-cluster" data-cluster-id="' + Number(cum.id) + '" title="Phóng tới cụm trên bản đồ"><i class="bi bi-geo-fill"></i></button>' +
+                        '<button type="button" class="btn btn-sm btn-outline-primary btn-focus-cluster" data-cluster-id="' + Number(cum.id) + '" title="Phóng tới tuyến trên bản đồ"><i class="bi bi-geo-fill"></i></button>' +
                         '</td>' +
                         '</tr>'
                     );
@@ -712,24 +954,24 @@
         const tbodyDonLoi = document.getElementById('tbody-don-loi');
         if (tbodyDonLoi) {
             if (danhSachDonLoi.length === 0) {
-                tbodyDonLoi.innerHTML = '<tr><td colspan="7" class="text-center text-success py-4"><i class="bi bi-check-circle-fill me-1"></i>Tất cả đơn hàng hợp lệ đã được phân vào cụm tuyến. Không có đơn ngoại lệ tồn đọng.</td></tr>';
+                tbodyDonLoi.innerHTML = '<tr><td colspan="7" class="text-center text-success py-4"><i class="bi bi-check-circle-fill me-1"></i>Tất cả đơn hàng hợp lệ đã được phân tuyến cho tài xế. Không có đơn tồn đọng.</td></tr>';
             } else {
                 tbodyDonLoi.innerHTML = danhSachDonLoi.map(function (donLoi) {
                     const lyDo = donLoi.ly_do_chua_phan_cong || 'loi_toa_do';
-                    let nhanLyDo = 'Lỗi tọa độ (> bán kính / thiếu)';
+                    let nhanLyDo = 'Sai lệch tọa độ (> 25km)';
                     let mauBadge = 'bg-danger';
                     if (lyDo === 'ngoai_vung_phuc_vu') {
-                        nhanLyDo = 'Ngoài vùng phục vụ (Sai phường)';
+                        nhanLyDo = 'Khác khu vực Phường/Xã';
                         mauBadge = 'bg-warning text-dark';
                     } else if (lyDo === 'qua_tai_tai_xe') {
-                        nhanLyDo = 'Quá tải định mức tài xế';
+                        nhanLyDo = 'Vượt định mức tải ca';
                         mauBadge = 'bg-secondary';
                     }
 
                     const wardOptions = ['<option value="">-- Chọn Phường/Xã phục vụ --</option>'].concat(
                         danhSachPhuong.map(function (ph) {
                             const selected = Number(donLoi.phuong_id || 0) === Number(ph.id) ? 'selected' : '';
-                            const label = ph.ten_phuong + ' - ' + (buuCuc.ten_quan_huyen || '') + ', ' + (buuCuc.ten_tinh || '') + ' [Mã: ' + ph.ma_hanh_chinh + ']';
+                            const label = ph.ten_phuong + ' - ' + (buuCuc.ten_quan_huyen || '');
                             return '<option value="' + Number(ph.id) + '" data-lat="' + escapeHtml(ph.vi_do_tam) + '" data-lng="' + escapeHtml(ph.kinh_do_tam) + '" ' + selected + '>' + escapeHtml(label) + '</option>';
                         })
                     ).join('');
@@ -745,7 +987,7 @@
                         '<div class="text-muted">' + escapeHtml(donLoi.so_dien_thoai_khach || '') + '</div>' +
                         '<div class="text-danger fw-semibold">COD: ' + formatCurrency(donLoi.tien_thu_ho) + '</div></td>' +
                         '<td><input type="text" class="form-control form-control-sm input-dia-chi" value="' + escapeHtml(donLoi.dia_chi_giao_hang) + '">' +
-                        '<div class="text-muted mt-1" style="font-size:0.72rem;">Phường gốc trong file: <strong>' + escapeHtml(donLoi.phuong_ten_goc || 'Không rõ') + '</strong></div></td>' +
+                        '<div class="text-muted mt-1" style="font-size:0.72rem;">Phường khai báo ban đầu: <strong>' + escapeHtml(donLoi.phuong_ten_goc || 'Không rõ') + '</strong></div></td>' +
                         '<td><span class="badge ' + mauBadge + '">' + escapeHtml(nhanLyDo) + '</span></td>' +
                         '<td><select class="form-select form-select-sm select-phuong-don-loi">' + wardOptions + '</select></td>' +
                         '<td>' +
@@ -754,10 +996,10 @@
                         '</td>' +
                         '<td class="text-center"><div class="d-grid gap-1">' +
                         '<div class="btn-group btn-group-sm" role="group">' +
-                        '<button type="button" class="btn btn-outline-info text-dark btn-nominatim-geocode" data-order-id="' + Number(donLoi.id) + '"><i class="bi bi-search me-1"></i>Nominatim</button>' +
+                        '<button type="button" class="btn btn-outline-info text-dark btn-nominatim-geocode" data-order-id="' + Number(donLoi.id) + '"><i class="bi bi-search me-1"></i>Tìm tọa độ</button>' +
                         '<button type="button" class="btn btn-outline-secondary btn-pick-on-map" data-order-id="' + Number(donLoi.id) + '"><i class="bi bi-crosshair me-1"></i>Chấm bản đồ</button>' +
                         '</div>' +
-                        '<button type="button" class="btn btn-sm btn-success fw-semibold btn-save-don-loi" data-order-id="' + Number(donLoi.id) + '"><i class="bi bi-check2-circle me-1"></i>Cập nhật &amp; Gán vào cụm</button>' +
+                        '<button type="button" class="btn btn-sm btn-success fw-semibold btn-save-don-loi" data-order-id="' + Number(donLoi.id) + '"><i class="bi bi-check2-circle me-1"></i>Xác nhận &amp; Gán vào tuyến</button>' +
                         '</div></td>' +
                         '</tr>'
                     );
@@ -795,8 +1037,22 @@
         const btnFitAll = document.getElementById('btn-fit-all-clusters');
         if (btnFitAll) {
             btnFitAll.addEventListener('click', function () {
+                const filterClusterEl = document.getElementById('filter-cluster-orders');
+                if (filterClusterEl) {
+                    filterClusterEl.value = 'all';
+                    renderAllClusterOrdersTable();
+                }
                 renderAllMapLayers(true);
             });
+        }
+
+        const filterClusterEl = document.getElementById('filter-cluster-orders');
+        const filterStatusEl = document.getElementById('filter-status-orders');
+        if (filterClusterEl) {
+            filterClusterEl.addEventListener('change', renderAllClusterOrdersTable);
+        }
+        if (filterStatusEl) {
+            filterStatusEl.addEventListener('change', renderAllClusterOrdersTable);
         }
 
         const btnCancelPick = document.getElementById('btn-cancel-pick-map');
@@ -808,6 +1064,16 @@
             const focusBtn = evt.target.closest('.btn-focus-cluster');
             if (focusBtn) {
                 focusClusterOnMap(focusBtn.getAttribute('data-cluster-id'));
+                return;
+            }
+
+            const orderRow = evt.target.closest('.row-dispatch-order-item');
+            if (orderRow && map) {
+                const lat = Number(orderRow.getAttribute('data-order-lat'));
+                const lng = Number(orderRow.getAttribute('data-order-lng'));
+                if (!Number.isNaN(lat) && !Number.isNaN(lng)) {
+                    map.setView([lat, lng], 16);
+                }
                 return;
             }
 

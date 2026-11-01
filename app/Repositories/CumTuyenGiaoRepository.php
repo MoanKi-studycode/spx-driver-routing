@@ -88,6 +88,9 @@ class CumTuyenGiaoRepository
                     nd.so_dien_thoai AS sdt_tai_xe,
                     nd.mau_sac_cum,
                     nd.phuong_uu_tien_id,
+                    nd.vi_do_hien_tai AS tai_xe_vi_do,
+                    nd.kinh_do_hien_tai AS tai_xe_kinh_do,
+                    nd.thoi_gian_vi_tri AS tai_xe_thoi_gian_vi_tri,
                     p.ten_phuong AS ten_phuong_uu_tien
                 FROM cum_tuyen_giao ctg
                 INNER JOIN nguoi_dung nd ON ctg.tai_xe_id = nd.id
@@ -119,6 +122,9 @@ class CumTuyenGiaoRepository
                     nd.so_dien_thoai AS sdt_tai_xe,
                     nd.mau_sac_cum,
                     nd.phuong_uu_tien_id,
+                    nd.vi_do_hien_tai AS tai_xe_vi_do,
+                    nd.kinh_do_hien_tai AS tai_xe_kinh_do,
+                    nd.thoi_gian_vi_tri AS tai_xe_thoi_gian_vi_tri,
                     p.ten_phuong AS ten_phuong_uu_tien,
                     COALESCE(stats.so_don_da_phan_cong, 0) AS so_don_dang_cho,
                     COALESCE(stats.so_don_thanh_cong, 0) AS so_don_da_giao,
@@ -158,7 +164,7 @@ class CumTuyenGiaoRepository
     }
 
     /**
-     * Lấy cụm tuyến đang hoạt động của một tài xế kèm danh sách đơn hàng `da_phan_cong`
+     * Lấy cụm tuyến hiện tại của một tài xế kèm danh sách đơn đang chờ (`don_hang`) và toàn bộ đơn trong cụm (`tat_ca_don_hang`)
      *
      * @param int $driverId
      * @return array|null
@@ -173,6 +179,7 @@ class CumTuyenGiaoRepository
                     nd.phuong_uu_tien_id,
                     nd.vi_do_hien_tai AS tai_xe_vi_do,
                     nd.kinh_do_hien_tai AS tai_xe_kinh_do,
+                    nd.thoi_gian_vi_tri AS tai_xe_thoi_gian_vi_tri,
                     p.ten_phuong AS ten_phuong_uu_tien,
                     bc.ten_buu_cuc,
                     bc.ma_buu_cuc,
@@ -186,8 +193,7 @@ class CumTuyenGiaoRepository
                 INNER JOIN buu_cuc bc ON ctg.buu_cuc_id = bc.id
                 LEFT JOIN phuong p ON nd.phuong_uu_tien_id = p.id
                 WHERE ctg.tai_xe_id = :tai_xe_id
-                  AND ctg.trang_thai = \'dang_giao\'
-                ORDER BY ctg.id DESC
+                ORDER BY CASE WHEN ctg.trang_thai = \'dang_giao\' THEN 0 ELSE 1 END ASC, ctg.id DESC
                 LIMIT 1';
 
         $stmt = $this->db->prepare($sql);
@@ -203,22 +209,20 @@ class CumTuyenGiaoRepository
         $cluster['buu_cuc_kinh_do'] = isset($row['buu_cuc_kinh_do']) ? (float) $row['buu_cuc_kinh_do'] : $cluster['kinh_do_xuat_phat'];
         $cluster['ban_kinh_phuc_vu_km'] = isset($row['ban_kinh_phuc_vu_km']) ? (float) $row['ban_kinh_phuc_vu_km'] : 25.0;
 
-        // Đính kèm danh sách đơn hàng đang chờ giao (`da_phan_cong`) sắp theo `thu_tu_giao ASC` cho TaiXeController
-        $sqlOrders = 'SELECT
-                          dh.*,
-                          p.ten_phuong,
-                          p.ma_hanh_chinh AS ma_hanh_chinh_phuong
-                      FROM don_hang dh
-                      LEFT JOIN phuong p ON dh.phuong_id = p.id
-                      WHERE dh.cum_tuyen_id = :cum_tuyen_id
-                        AND dh.trang_thai = \'da_phan_cong\'
-                      ORDER BY COALESCE(dh.thu_tu_giao, 999999) ASC, dh.thu_tu_file ASC, dh.id ASC';
+        $sqlAllOrders = 'SELECT
+                             dh.*,
+                             p.ten_phuong,
+                             p.ma_hanh_chinh AS ma_hanh_chinh_phuong
+                         FROM don_hang dh
+                         LEFT JOIN phuong p ON dh.phuong_id = p.id
+                         WHERE dh.cum_tuyen_id = :cum_tuyen_id
+                         ORDER BY COALESCE(dh.thu_tu_giao, 999999) ASC, dh.thu_tu_file ASC, dh.id ASC';
 
-        $stmtOrders = $this->db->prepare($sqlOrders);
+        $stmtOrders = $this->db->prepare($sqlAllOrders);
         $stmtOrders->execute(['cum_tuyen_id' => $cluster['id']]);
         $orderRows = $stmtOrders->fetchAll(PDO::FETCH_ASSOC);
 
-        $cluster['don_hang'] = array_map(static function (array $o): array {
+        $allOrders = array_map(static function (array $o): array {
             $o['id'] = (int) $o['id'];
             $o['buu_cuc_id'] = (int) $o['buu_cuc_id'];
             $o['thu_tu_file'] = (int) $o['thu_tu_file'];
@@ -231,6 +235,14 @@ class CumTuyenGiaoRepository
             $o['thu_tu_giao'] = $o['thu_tu_giao'] !== null ? (int) $o['thu_tu_giao'] : null;
             return $o;
         }, $orderRows);
+
+        $pendingOrders = array_values(array_filter(
+            $allOrders,
+            static fn(array $o): bool => ($o['trang_thai'] ?? '') === 'da_phan_cong'
+        ));
+
+        $cluster['don_hang'] = $pendingOrders;
+        $cluster['tat_ca_don_hang'] = $allOrders;
 
         return $cluster;
     }
@@ -358,6 +370,12 @@ class CumTuyenGiaoRepository
         $row['ty_le_tiet_kiem_phan_tram'] = (float) $row['ty_le_tiet_kiem_phan_tram'];
         $row['thoi_gian_chay_ms'] = (float) $row['thoi_gian_chay_ms'];
 
+        if (array_key_exists('tai_xe_vi_do', $row)) {
+            $row['tai_xe_vi_do'] = $row['tai_xe_vi_do'] !== null ? (float) $row['tai_xe_vi_do'] : null;
+        }
+        if (array_key_exists('tai_xe_kinh_do', $row)) {
+            $row['tai_xe_kinh_do'] = $row['tai_xe_kinh_do'] !== null ? (float) $row['tai_xe_kinh_do'] : null;
+        }
         if (isset($row['so_don_dang_cho'])) {
             $row['so_don_dang_cho'] = (int) $row['so_don_dang_cho'];
         }
