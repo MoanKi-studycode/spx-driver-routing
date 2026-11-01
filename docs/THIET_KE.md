@@ -43,7 +43,7 @@ Hệ thống giải quyết bài toán điều phối chặng cuối (Last-Mile 
 - Tọa độ Bưu cục $P_0$, Tỉnh/Thành, Quận/Huyện và bán kính vùng phục vụ (`ban_kinh_phuc_vu_km`, mặc định `25.00` km) được đọc động từ bảng `buu_cuc` theo `buu_cuc_id` của Điều phối viên đang đăng nhập (mặc định Cơ sở 1: Bưu cục SPX Nha Trang, `vi_do = 12.2488000`, `kinh_do = 109.1905000`).
 
 2.2. Mẫu dữ liệu đầu vào (`data/don_hang_mau.json`)
-File mẫu gồm 34 đơn hàng quanh TP. Nha Trang (32 đơn hợp lệ + 2 đơn lỗi mẫu để kiểm thử ngoại lệ), có đầy đủ thông tin hành chính:
+File mẫu gồm 45 đơn hàng quanh TP. Nha Trang, có đầy đủ thông tin hành chính:
 ```json
 {
   "ma_lo": "LO_20261017_SANG",
@@ -424,7 +424,7 @@ dinh-tuyen-spx/
       js/                        (ban_do_dieu_phoi.js, ban_do_tai_xe.js, bieu_do.js)
       img/
   data/
-    don_hang_mau.json            (34 đơn: 32 hợp lệ quanh Nha Trang + 2 đơn lỗi mẫu)
+    don_hang_mau.json            (45 đơn quanh Nha Trang)
   database/
     schema.sql
     seed.php
