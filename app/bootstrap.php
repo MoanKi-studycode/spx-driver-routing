@@ -26,8 +26,7 @@ if (file_exists($composerAutoload)) {
     });
 }
 
-// Khởi tạo session nếu chưa được khởi tạo
-if (session_status() === PHP_SESSION_NONE) {
-    session_start();
+// Khởi tạo session an toàn qua class Core\Session
+if (PHP_SAPI !== 'cli' && session_status() === PHP_SESSION_NONE) {
+    \App\Core\Session::start();
 }
-
