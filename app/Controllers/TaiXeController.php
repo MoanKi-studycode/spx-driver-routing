@@ -5,9 +5,14 @@ declare(strict_types=1);
 namespace App\Controllers;
 
 use App\Core\Database;
+use App\Repositories\BuuCucRepository;
 use App\Repositories\CumTuyenGiaoRepository;
 use App\Repositories\DonHangRepository;
+use App\Repositories\NguoiDungRepository;
+use App\Services\Routing\DieuPhoiLoTrinhService;
+use App\Services\Routing\HaversineService;
 use PDOException;
+use Throwable;
 
 /**
  * Quản lý màn hình tài xế, vị trí GPS và kết quả giao hàng.
@@ -56,7 +61,7 @@ class TaiXeController
     }
 
     /**
-     * Kiểm tra dữ liệu vị trí và quyền sở hữu lộ trình trước khi tái định tuyến.
+     * Lưu vị trí hiện tại của tài xế và chạy lại NN + 2-Opt từ vị trí mới P_curr cho các đơn còn lại (Mục 4.2.3 & 5.2).
      */
     public function capNhatLoTrinh(): void
     {
@@ -89,24 +94,83 @@ class TaiXeController
             $connection = Database::getConnection();
             $driverId = (int) $_SESSION['user_id'];
             $clusterRepository = new CumTuyenGiaoRepository($connection);
+            $donHangRepository = new DonHangRepository($connection);
+            $nguoiDungRepository = new NguoiDungRepository($connection);
+            $buuCucRepository = new BuuCucRepository($connection);
+
             $cluster = $clusterRepository->getActiveClusterByDriver($driverId);
-        } catch (PDOException $exception) {
-            error_log('Không thể xác minh lộ trình tài xế: ' . $exception->getMessage());
+            if (!is_array($cluster)) {
+                $this->json(false, 'Tài xế hiện không có lộ trình đang giao.', [], 409);
+                return;
+            }
+
+            $buuCucId = (int) ($cluster['buu_cuc_id'] ?? 1);
+            $buuCuc = $buuCucRepository->getById($buuCucId);
+            $depotLat = (float) ($cluster['buu_cuc_vi_do'] ?? ($buuCuc['vi_do'] ?? 12.2488000));
+            $depotLng = (float) ($cluster['buu_cuc_kinh_do'] ?? ($buuCuc['kinh_do'] ?? 109.1905000));
+            $maxRadiusKm = (float) ($cluster['ban_kinh_phuc_vu_km'] ?? ($buuCuc['ban_kinh_phuc_vu_km'] ?? 25.0));
+
+            $distanceFromDepot = HaversineService::distance($depotLat, $depotLng, $latitude, $longitude);
+            if ($distanceFromDepot > $maxRadiusKm) {
+                $this->json(
+                    false,
+                    sprintf(
+                        'Vị trí GPS nằm ngoài bán kính phục vụ %.1f km của Bưu cục (khoảng cách hiện tại: %.2f km).',
+                        $maxRadiusKm,
+                        $distanceFromDepot
+                    ),
+                    [],
+                    422
+                );
+                return;
+            }
+
+            $connection->beginTransaction();
+
+            // 1. Lưu tọa độ hiện tại vào nguoi_dung (vi_do_hien_tai, kinh_do_hien_tai)
+            $nguoiDungRepository->updateLocation($driverId, $latitude, $longitude);
+
+            // 2. Lấy các đơn còn ở trạng thái da_phan_cong của cụm và chạy lại NN + 2-Opt từ P_curr
+            // Không ghi đè các cột km_* của cum_tuyen_giao để bảo toàn số liệu thống kê (Mục 4.2.3)
+            $clusterId = (int) $cluster['id'];
+            $remainingOrders = $donHangRepository->getOrdersByCluster($clusterId, 'da_phan_cong');
+            $reorderedOrders = $remainingOrders;
+
+            if (!empty($remainingOrders)) {
+                $routingService = new DieuPhoiLoTrinhService();
+                $planResult = $routingService->plan(
+                    ['vi_do' => $latitude, 'kinh_do' => $longitude],
+                    $remainingOrders
+                );
+                $orderedPoints = $planResult['thu_tu'] ?? $remainingOrders;
+                $reorderedOrders = [];
+
+                foreach (array_values($orderedPoints) as $seqIndex => $point) {
+                    $newSeq = $seqIndex + 1;
+                    $donHangRepository->updateSequence((int) $point['id'], $clusterId, $newSeq);
+                    $point['thu_tu_giao'] = $newSeq;
+                    $reorderedOrders[] = $point;
+                }
+            }
+
+            $connection->commit();
+
+            $this->json(
+                true,
+                'Đã lưu vị trí hiện tại và tái định tuyến 2-Opt cho ' . count($reorderedOrders) . ' đơn còn lại.',
+                [
+                    'vi_do' => $latitude,
+                    'kinh_do' => $longitude,
+                    'don_hang' => $reorderedOrders,
+                ]
+            );
+        } catch (Throwable $exception) {
+            if (isset($connection) && $connection->inTransaction()) {
+                $connection->rollBack();
+            }
+            error_log('Không thể cập nhật lộ trình tài xế: ' . $exception->getMessage());
             $this->json(false, 'Dịch vụ dữ liệu hiện không khả dụng.', [], 503);
-            return;
         }
-
-        if (!is_array($cluster)) {
-            $this->json(false, 'Tài xế hiện không có lộ trình đang giao.', [], 409);
-            return;
-        }
-
-        $this->json(
-            false,
-            'Chưa thể tái định tuyến an toàn: Repository hiện chưa cung cấp danh sách đơn còn lại, tọa độ bưu cục và bán kính phục vụ. Không có dữ liệu nào được thay đổi.',
-            [],
-            503
-        );
     }
 
     /**

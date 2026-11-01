@@ -158,7 +158,7 @@ class CumTuyenGiaoRepository
     }
 
     /**
-     * Lấy cụm tuyến đang hoạt động của một tài xế
+     * Lấy cụm tuyến đang hoạt động của một tài xế kèm danh sách đơn hàng `da_phan_cong`
      *
      * @param int $driverId
      * @return array|null
@@ -171,9 +171,19 @@ class CumTuyenGiaoRepository
                     nd.so_dien_thoai AS sdt_tai_xe,
                     nd.mau_sac_cum,
                     nd.phuong_uu_tien_id,
-                    p.ten_phuong AS ten_phuong_uu_tien
+                    nd.vi_do_hien_tai AS tai_xe_vi_do,
+                    nd.kinh_do_hien_tai AS tai_xe_kinh_do,
+                    p.ten_phuong AS ten_phuong_uu_tien,
+                    bc.ten_buu_cuc,
+                    bc.ma_buu_cuc,
+                    bc.ten_quan_huyen,
+                    bc.ten_tinh,
+                    bc.vi_do AS buu_cuc_vi_do,
+                    bc.kinh_do AS buu_cuc_kinh_do,
+                    bc.ban_kinh_phuc_vu_km
                 FROM cum_tuyen_giao ctg
                 INNER JOIN nguoi_dung nd ON ctg.tai_xe_id = nd.id
+                INNER JOIN buu_cuc bc ON ctg.buu_cuc_id = bc.id
                 LEFT JOIN phuong p ON nd.phuong_uu_tien_id = p.id
                 WHERE ctg.tai_xe_id = :tai_xe_id
                   AND ctg.trang_thai = \'dang_giao\'
@@ -184,7 +194,45 @@ class CumTuyenGiaoRepository
         $stmt->execute(['tai_xe_id' => $driverId]);
         $row = $stmt->fetch(PDO::FETCH_ASSOC);
 
-        return $row !== false ? $this->normalizeRow($row) : null;
+        if ($row === false) {
+            return null;
+        }
+
+        $cluster = $this->normalizeRow($row);
+        $cluster['buu_cuc_vi_do'] = isset($row['buu_cuc_vi_do']) ? (float) $row['buu_cuc_vi_do'] : $cluster['vi_do_xuat_phat'];
+        $cluster['buu_cuc_kinh_do'] = isset($row['buu_cuc_kinh_do']) ? (float) $row['buu_cuc_kinh_do'] : $cluster['kinh_do_xuat_phat'];
+        $cluster['ban_kinh_phuc_vu_km'] = isset($row['ban_kinh_phuc_vu_km']) ? (float) $row['ban_kinh_phuc_vu_km'] : 25.0;
+
+        // Đính kèm danh sách đơn hàng đang chờ giao (`da_phan_cong`) sắp theo `thu_tu_giao ASC` cho TaiXeController
+        $sqlOrders = 'SELECT
+                          dh.*,
+                          p.ten_phuong,
+                          p.ma_hanh_chinh AS ma_hanh_chinh_phuong
+                      FROM don_hang dh
+                      LEFT JOIN phuong p ON dh.phuong_id = p.id
+                      WHERE dh.cum_tuyen_id = :cum_tuyen_id
+                        AND dh.trang_thai = \'da_phan_cong\'
+                      ORDER BY COALESCE(dh.thu_tu_giao, 999999) ASC, dh.thu_tu_file ASC, dh.id ASC';
+
+        $stmtOrders = $this->db->prepare($sqlOrders);
+        $stmtOrders->execute(['cum_tuyen_id' => $cluster['id']]);
+        $orderRows = $stmtOrders->fetchAll(PDO::FETCH_ASSOC);
+
+        $cluster['don_hang'] = array_map(static function (array $o): array {
+            $o['id'] = (int) $o['id'];
+            $o['buu_cuc_id'] = (int) $o['buu_cuc_id'];
+            $o['thu_tu_file'] = (int) $o['thu_tu_file'];
+            $o['phuong_id'] = $o['phuong_id'] !== null ? (int) $o['phuong_id'] : null;
+            $o['vi_do'] = $o['vi_do'] !== null ? (float) $o['vi_do'] : null;
+            $o['kinh_do'] = $o['kinh_do'] !== null ? (float) $o['kinh_do'] : null;
+            $o['tien_thu_ho'] = (float) $o['tien_thu_ho'];
+            $o['cum_tuyen_id'] = $o['cum_tuyen_id'] !== null ? (int) $o['cum_tuyen_id'] : null;
+            $o['tai_xe_id'] = $o['tai_xe_id'] !== null ? (int) $o['tai_xe_id'] : null;
+            $o['thu_tu_giao'] = $o['thu_tu_giao'] !== null ? (int) $o['thu_tu_giao'] : null;
+            return $o;
+        }, $orderRows);
+
+        return $cluster;
     }
 
     /**

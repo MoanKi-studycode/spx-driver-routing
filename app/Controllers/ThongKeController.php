@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace App\Controllers;
 
+use App\Core\Csrf;
 use App\Core\Database;
 use App\Core\Session;
 use App\Repositories\BuuCucRepository;
@@ -67,8 +68,15 @@ class ThongKeController
         $summary = $this->buildSummaryMetrics($danhSachCum);
         $benchmarkData = $this->runBenchmarkSuite($buuCuc);
 
+        $baseUrl = defined('BASE_URL') ? BASE_URL : '/dinh-tuyen-spx/public';
+        $pageTitle = 'Thống Kê & Thực Nghiệm Thuật Toán - ' . ($buuCuc['ten_buu_cuc'] ?? 'SPX Express');
+        $csrfToken = class_exists(Csrf::class) ? Csrf::getToken() : (string) ($_SESSION['_csrf_token'] ?? '');
+
         $viewData = [
-            'pageTitle' => 'Thống Kê & Thực Nghiệm Thuật Toán - ' . ($buuCuc['ten_buu_cuc'] ?? 'SPX Express'),
+            'title' => $pageTitle,
+            'pageTitle' => $pageTitle,
+            'pageScript' => $baseUrl . '/assets/js/bieu_do.js',
+            'csrfToken' => $csrfToken,
             'buuCuc' => $buuCuc,
             'danhSachBuuCuc' => $danhSachBuuCuc,
             'danhSachCum' => $danhSachCum,
@@ -186,6 +194,8 @@ class ThongKeController
                 'id' => 1,
                 'ho_ten' => 'Tài xế Cụm 1 (Bắc)',
                 'phuong_uu_tien_id' => 1,
+                'vi_do' => $depot['vi_do'] + 0.030,
+                'kinh_do' => $depot['kinh_do'] + 0.008,
                 'vi_do_tam' => $depot['vi_do'] + 0.030,
                 'kinh_do_tam' => $depot['kinh_do'] + 0.008,
                 'suc_chua_con_lai' => 20,
@@ -195,6 +205,8 @@ class ThongKeController
                 'id' => 2,
                 'ho_ten' => 'Tài xế Cụm 2 (Tây)',
                 'phuong_uu_tien_id' => 2,
+                'vi_do' => $depot['vi_do'] + 0.006,
+                'kinh_do' => $depot['kinh_do'] - 0.029,
                 'vi_do_tam' => $depot['vi_do'] + 0.006,
                 'kinh_do_tam' => $depot['kinh_do'] - 0.029,
                 'suc_chua_con_lai' => 20,
@@ -204,6 +216,8 @@ class ThongKeController
                 'id' => 3,
                 'ho_ten' => 'Tài xế Cụm 3 (Trung tâm)',
                 'phuong_uu_tien_id' => 3,
+                'vi_do' => $depot['vi_do'] - 0.015,
+                'kinh_do' => $depot['kinh_do'] + 0.001,
                 'vi_do_tam' => $depot['vi_do'] - 0.015,
                 'kinh_do_tam' => $depot['kinh_do'] + 0.001,
                 'suc_chua_con_lai' => 20,
@@ -218,7 +232,6 @@ class ThongKeController
             $subset = array_slice($samplePool, 0, $n);
             $tStart = microtime(true);
 
-            // Số tài xế tham gia theo định mức tối đa 20 đơn/cụm
             $numDrivers = min(count($drivers), max(1, (int) ceil($n / 15)));
             $activeDrivers = array_slice($drivers, 0, $numDrivers);
 
@@ -262,7 +275,7 @@ class ThongKeController
     }
 
     /**
-     * Tải tập 40+ đơn hàng hợp lệ từ file mẫu (xáo trộn tất định theo thứ tự đan xen để thấy rõ hiệu quả Baseline vs 2-Opt)
+     * Tải tập 40+ đơn hàng hợp lệ từ file mẫu
      *
      * @param array $depot
      * @return array
@@ -296,7 +309,6 @@ class ThongKeController
             // Bỏ qua nếu không đọc được file, sẽ sinh tọa độ tất định bên dưới
         }
 
-        // Bổ sung nếu chưa đủ 40 điểm
         while (count($validPool) < 40) {
             $i = count($validPool) + 1;
             $angle = $i * 1.15;
@@ -310,7 +322,6 @@ class ThongKeController
             ];
         }
 
-        // Sắp xếp đan xen tất định cho thu_tu_file để lộ trình Baseline (chưa tối ưu) phản ánh đúng đơn ngẫu nhiên từ sàn TMĐT
         $interleaved = [];
         $half = (int) ceil(count($validPool) / 2);
         for ($i = 0; $i < $half; $i++) {

@@ -202,7 +202,7 @@
                 setCurrentLocation(
                     position.coords.latitude,
                     position.coords.longitude,
-                    'Đã lấy vị trí GPS.'
+                    'Đã lấy vị trí GPS và tối ưu lại lộ trình.'
                 );
             },
             (error) => {
@@ -231,8 +231,8 @@
         }
         map.setView([currentLocation.vi_do, currentLocation.kinh_do], 14);
 
-        await drawRoute();
         const updated = await requestReroute();
+        await drawRoute();
         if (updated && message) {
             setStatus(message);
         }
@@ -304,6 +304,12 @@
             if (!response.ok || result.thanh_cong !== true) {
                 setStatus(result.thong_bao || 'Không thể lưu vị trí hoặc cập nhật lộ trình.');
                 return false;
+            }
+            if (Array.isArray(result.du_lieu?.don_hang)) {
+                orders = result.du_lieu.don_hang
+                    .filter(isMappableOrder)
+                    .sort((a, b) => Number(a.thu_tu_giao || 0) - Number(b.thu_tu_giao || 0));
+                renderOrders();
             }
             return true;
         } catch {

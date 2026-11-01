@@ -11,6 +11,12 @@ $baseUrl = defined('BASE_URL') ? BASE_URL : '/dinh-tuyen-spx/public';
 $nominatimBaseUrl = defined('NOMINATIM_BASE_URL') ? NOMINATIM_BASE_URL : 'https://nominatim.openstreetmap.org';
 $osrmBaseUrl = defined('OSRM_BASE_URL') ? OSRM_BASE_URL : 'https://router.project-osrm.org';
 
+// Đồng bộ biến $title và $pageScript cho layouts/header.php và layouts/footer.php
+$title = isset($pageTitle) && is_string($pageTitle) && $pageTitle !== ''
+    ? $pageTitle
+    : 'Điều Phối Phân Cụm & Lộ Trình - SPX Express';
+$pageScript = $baseUrl . '/assets/js/ban_do_dieu_phoi.js';
+
 $layoutDir = __DIR__ . '/../layouts';
 $hasHeaderLayout = is_file($layoutDir . '/header.php');
 $hasNavbarLayout = is_file($layoutDir . '/navbar.php');
@@ -30,6 +36,9 @@ $tyLeTietKiemTong = $tongKmBaseline > 0.0
 
 if ($hasHeaderLayout) {
     require $layoutDir . '/header.php';
+?>
+<link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.min.css" rel="stylesheet">
+<?php
 } else {
 ?>
 <!DOCTYPE html>
@@ -38,7 +47,7 @@ if ($hasHeaderLayout) {
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <meta name="csrf-token" content="<?php echo htmlspecialchars((string) ($csrfToken ?? ''), ENT_QUOTES, 'UTF-8'); ?>">
-    <title><?php echo htmlspecialchars((string) ($pageTitle ?? 'Điều Phối - SPX Express'), ENT_QUOTES, 'UTF-8'); ?></title>
+    <title><?php echo htmlspecialchars((string) $title, ENT_QUOTES, 'UTF-8'); ?></title>
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
     <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.min.css" rel="stylesheet">
     <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
@@ -75,7 +84,7 @@ if ($hasNavbarLayout) {
 }
 ?>
 
-<!-- Đảm bảo luôn có thẻ meta csrf-token cho JS trong trường hợp layout chưa kịp in -->
+<!-- Đảm bảo luôn có thẻ input csrf-token dự phòng cho JS -->
 <input type="hidden" id="csrf-token-fallback" value="<?php echo htmlspecialchars((string) ($csrfToken ?? ''), ENT_QUOTES, 'UTF-8'); ?>">
 
 <div class="container-fluid py-3 px-3">
@@ -93,7 +102,7 @@ if ($hasNavbarLayout) {
                         </h5>
                     </div>
                     <div class="small text-secondary mb-2">
-                        <i class="bi bi-pin-map me-1"></i><strong>Địa chỉ Bưu cục ($P_0$):</strong>
+                        <i class="bi bi-pin-map me-1"></i><strong>Địa chỉ Bưu cục (P0):</strong>
                         <?php echo htmlspecialchars((string) ($buuCuc['dia_chi'] ?? ''), ENT_QUOTES, 'UTF-8'); ?>
                         <span class="ms-2 badge bg-secondary-subtle text-dark border">
                             Tọa độ P0: <?php echo htmlspecialchars(number_format((float) ($buuCuc['vi_do'] ?? 0), 5) . ', ' . number_format((float) ($buuCuc['kinh_do'] ?? 0), 5), ENT_QUOTES, 'UTF-8'); ?>
@@ -223,7 +232,7 @@ if ($hasNavbarLayout) {
                 </div>
                 <div class="card-footer bg-white small text-muted d-flex flex-wrap justify-content-between gap-2">
                     <div>
-                        <span class="me-3"><i class="bi bi-house-door-fill text-danger"></i> Bưu cục SPX ($P_0$)</span>
+                        <span class="me-3"><i class="bi bi-house-door-fill text-danger"></i> Bưu cục SPX (P0)</span>
                         <span class="me-3"><i class="bi bi-star-fill text-warning"></i> Tâm cụm K-Means (Centroid)</span>
                         <span class="me-3"><i class="bi bi-circle-fill text-primary"></i> Điểm giao hàng (1..n)</span>
                         <span><i class="bi bi-exclamation-triangle-fill text-danger"></i> Điểm lỗi tọa độ</span>

@@ -9,6 +9,12 @@ declare(strict_types=1);
 
 $baseUrl = defined('BASE_URL') ? BASE_URL : '/dinh-tuyen-spx/public';
 
+// Đồng bộ biến $title và $pageScript cho layouts/header.php và layouts/footer.php
+$title = isset($pageTitle) && is_string($pageTitle) && $pageTitle !== ''
+    ? $pageTitle
+    : 'Thống Kê & Thực Nghiệm - SPX Express';
+$pageScript = $baseUrl . '/assets/js/bieu_do.js';
+
 $layoutDir = __DIR__ . '/../layouts';
 $hasHeaderLayout = is_file($layoutDir . '/header.php');
 $hasNavbarLayout = is_file($layoutDir . '/navbar.php');
@@ -16,6 +22,9 @@ $hasFooterLayout = is_file($layoutDir . '/footer.php');
 
 if ($hasHeaderLayout) {
     require $layoutDir . '/header.php';
+?>
+<link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.min.css" rel="stylesheet">
+<?php
 } else {
 ?>
 <!DOCTYPE html>
@@ -23,7 +32,7 @@ if ($hasHeaderLayout) {
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title><?php echo htmlspecialchars((string) ($pageTitle ?? 'Thống Kê & Thực Nghiệm - SPX Express'), ENT_QUOTES, 'UTF-8'); ?></title>
+    <title><?php echo htmlspecialchars((string) $title, ENT_QUOTES, 'UTF-8'); ?></title>
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
     <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.min.css" rel="stylesheet">
     <link rel="stylesheet" href="<?php echo htmlspecialchars($baseUrl . '/assets/css/app.css', ENT_QUOTES, 'UTF-8'); ?>">
@@ -210,8 +219,8 @@ if ($hasNavbarLayout) {
                         <table class="table table-striped table-hover align-middle mb-0 small" id="table-benchmark">
                             <thead class="table-light">
                                 <tr>
-                                    <th class="text-center">Quy mô ($N$ đơn)</th>
-                                    <th class="text-center">Số cụm ($K$)</th>
+                                    <th class="text-center">Quy mô (N đơn)</th>
+                                    <th class="text-center">Số cụm (K)</th>
                                     <th class="text-end">Baseline (km)</th>
                                     <th class="text-end">Nearest Neighbor (km)</th>
                                     <th class="text-end">2-Opt Tối ưu (km)</th>

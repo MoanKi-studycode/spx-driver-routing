@@ -441,7 +441,6 @@
                 }
             }
 
-            // Nếu Nominatim không tìm ra địa chỉ chi tiết hoặc không có mạng, lấy tọa độ tâm Phường đã chọn (hoặc tâm Bưu cục P0) làm gợi ý dự phòng
             if (foundLat === null || foundLng === null) {
                 if (wardSelect && wardSelect.selectedOptions.length > 0) {
                     const opt = wardSelect.selectedOptions[0];
@@ -477,7 +476,6 @@
                 map.setView([Number(foundLat), Number(foundLng)], 15);
             }
         } catch (err) {
-            // Dự phòng theo tâm phường nếu Nominatim bị chặn hoặc quá thời gian
             if (wardSelect && wardSelect.selectedOptions.length > 0) {
                 const opt = wardSelect.selectedOptions[0];
                 const wLat = opt.getAttribute('data-lat');
@@ -507,14 +505,15 @@
         }
 
         try {
+            const csrfToken = getCsrfToken();
             const response = await fetch(baseUrl + '/api/dieu-phoi/phan-cum-toi-uu', {
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json',
                     'Accept': 'application/json',
-                    'X-CSRF-Token': getCsrfToken()
+                    'X-CSRF-Token': csrfToken
                 },
-                body: JSON.stringify({})
+                body: JSON.stringify({ _csrf_token: csrfToken })
             });
 
             const res = await response.json();
@@ -572,14 +571,16 @@
         }
 
         try {
+            const csrfToken = getCsrfToken();
             const response = await fetch(baseUrl + '/api/dieu-phoi/sua-don-loi', {
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json',
                     'Accept': 'application/json',
-                    'X-CSRF-Token': getCsrfToken()
+                    'X-CSRF-Token': csrfToken
                 },
                 body: JSON.stringify({
+                    _csrf_token: csrfToken,
                     don_hang_id: Number(orderId),
                     phuong_id: phuongId,
                     vi_do: Number(viDo),
@@ -617,7 +618,6 @@
     }
 
     function refreshTablesAndKpis() {
-        // Cập nhật KPI
         let totalOrders = 0;
         let totalBaseline = 0;
         let totalToiUu = 0;
@@ -654,7 +654,6 @@
             badgeDonLoi.textContent = danhSachDonLoi.length + ' đơn cần xử lý';
         }
 
-        // Render lại bảng Cụm tuyến
         const tbodyCum = document.getElementById('tbody-cum-tuyen');
         if (tbodyCum) {
             if (danhSachCum.length === 0) {
@@ -698,7 +697,6 @@
             }
         }
 
-        // Render lại bảng Đơn lỗi
         const tbodyDonLoi = document.getElementById('tbody-don-loi');
         if (tbodyDonLoi) {
             if (danhSachDonLoi.length === 0) {
@@ -820,8 +818,14 @@
         });
     }
 
-    document.addEventListener('DOMContentLoaded', function () {
+    function bootstrapDispatchPage() {
         initMap();
         bindEvents();
-    });
+    }
+
+    if (document.readyState === 'loading') {
+        document.addEventListener('DOMContentLoaded', bootstrapDispatchPage);
+    } else {
+        bootstrapDispatchPage();
+    }
 })();

@@ -135,6 +135,9 @@ class NguoiDungRepository
             $normalized['suc_chua_con_lai'] = max(0, $sucChuaMoiCum - $soDonHienTai);
             $normalized['vi_do_tam'] = $row['vi_do_tam'] !== null ? (float) $row['vi_do_tam'] : null;
             $normalized['kinh_do_tam'] = $row['kinh_do_tam'] !== null ? (float) $row['kinh_do_tam'] : null;
+            // Đồng bộ key vi_do / kinh_do cho BalancedKMeansService::matchClustersToDrivers() của Thành viên 1
+            $normalized['vi_do'] = $normalized['vi_do_tam'];
+            $normalized['kinh_do'] = $normalized['kinh_do_tam'];
             return $normalized;
         }, $rows);
     }
@@ -156,13 +159,11 @@ class NguoiDungRepository
                 WHERE id = :id';
 
         $stmt = $this->db->prepare($sql);
-        $stmt->execute([
+        return $stmt->execute([
             'vi_do' => $lat,
             'kinh_do' => $lng,
             'id' => $userId,
         ]);
-
-        return $stmt->rowCount() > 0;
     }
 
     /**

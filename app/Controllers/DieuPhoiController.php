@@ -7,7 +7,6 @@ namespace App\Controllers;
 use App\Core\Csrf;
 use App\Core\Database;
 use App\Core\Session;
-use App\Core\ViewHelper;
 use App\Repositories\BuuCucRepository;
 use App\Repositories\CumTuyenGiaoRepository;
 use App\Repositories\DonHangRepository;
@@ -80,9 +79,13 @@ class DieuPhoiController
 
         // Chuẩn bị dữ liệu chi tiết từng cụm kèm lộ trình Baseline và lộ trình 2-Opt để vẽ trên Leaflet
         $duLieuCumBanDo = $this->buildClusterMapPayload($danhSachCum, $buuCuc);
+        $baseUrl = defined('BASE_URL') ? BASE_URL : '/dinh-tuyen-spx/public';
+        $pageTitle = 'Điều Phối Phân Cụm & Lộ Trình - ' . ($buuCuc['ten_buu_cuc'] ?? 'SPX Express');
 
         $viewData = [
-            'pageTitle' => 'Điều Phối Phân Cụm & Lộ Trình - ' . ($buuCuc['ten_buu_cuc'] ?? 'SPX Express'),
+            'title' => $pageTitle,
+            'pageTitle' => $pageTitle,
+            'pageScript' => $baseUrl . '/assets/js/ban_do_dieu_phoi.js',
             'buuCuc' => $buuCuc,
             'danhSachBuuCuc' => $danhSachBuuCuc,
             'danhSachPhuong' => $danhSachPhuong,
@@ -184,7 +187,21 @@ class DieuPhoiController
 
             // 3. Chạy thuật toán Phân cụm Balanced K-Means & Tối ưu lộ trình NN + 2-Opt từ P0
             if (!empty($ordersToCluster) && !empty($availableDrivers)) {
-                $clusters = $this->runBalancedKMeans($ordersToCluster, $availableDrivers, $depot, (int) ($buuCuc['suc_chua_moi_cum'] ?? 20));
+                $wardCoordinates = [];
+                foreach ($validWards as $w) {
+                    $wardCoordinates[(int) $w['id']] = [
+                        'vi_do' => (float) $w['vi_do_tam'],
+                        'kinh_do' => (float) $w['kinh_do_tam'],
+                    ];
+                }
+
+                $clusters = $this->runBalancedKMeans(
+                    $ordersToCluster,
+                    $availableDrivers,
+                    $depot,
+                    (int) ($buuCuc['suc_chua_moi_cum'] ?? 20),
+                    $wardCoordinates
+                );
                 $batchCode = (string) ($inboundResult['ma_lo'] ?? ('LO_' . date('Ymd')));
 
                 foreach ($clusters as $idx => $clusterItem) {
@@ -596,7 +613,6 @@ class DieuPhoiController
         }
 
         if ($userId === null || $role !== 'dieu_phoi') {
-            // Nếu chưa đăng nhập: kiểm tra có tài khoản điều phối mặc định trong môi trường dev khi chưa ghép nhánh Auth hoặc chuyển hướng về /login
             if (isset($_GET['dev_auto_login']) && $_GET['dev_auto_login'] === '1') {
                 $admin = $this->nguoiDungRepo->findByUsername('admin');
                 if ($admin !== null) {
@@ -667,13 +683,14 @@ class DieuPhoiController
      * @param array $drivers
      * @param array $depot
      * @param int $maxPerCluster
+     * @param array $wardCoordinates
      * @return array
      */
-    private function runBalancedKMeans(array $orders, array $drivers, array $depot, int $maxPerCluster = 20): array
+    private function runBalancedKMeans(array $orders, array $drivers, array $depot, int $maxPerCluster = 20, array $wardCoordinates = []): array
     {
         if (class_exists(BalancedKMeansService::class)) {
             $service = new BalancedKMeansService();
-            $result = $service->cluster($orders, $drivers, $depot);
+            $result = $service->cluster($orders, $drivers, $depot, $wardCoordinates);
             if (!empty($result)) {
                 return $result;
             }
@@ -1086,7 +1103,7 @@ class DieuPhoiController
     }
 
     /**
-     * Tạo hoặc lấy CSRF token hiện tại trong session
+     * Tạo hoặc lấy CSRF token hiện tại trong session (đồng bộ khóa _csrf_token của hệ thống)
      *
      * @return string
      */
@@ -1099,15 +1116,20 @@ class DieuPhoiController
         if (class_exists(Csrf::class)) {
             $token = Csrf::getToken();
             if ($token !== '') {
+                $_SESSION['csrf_token'] = $token;
                 return $token;
             }
         }
 
-        if (empty($_SESSION['csrf_token']) || !is_string($_SESSION['csrf_token'])) {
-            $_SESSION['csrf_token'] = bin2hex(random_bytes(32));
+        $token = $_SESSION['_csrf_token'] ?? ($_SESSION['csrf_token'] ?? null);
+        if (!is_string($token) || $token === '') {
+            $token = bin2hex(random_bytes(32));
         }
 
-        return $_SESSION['csrf_token'];
+        $_SESSION['_csrf_token'] = $token;
+        $_SESSION['csrf_token'] = $token;
+
+        return $token;
     }
 
     /**
@@ -1120,7 +1142,7 @@ class DieuPhoiController
         $token = $_SERVER['HTTP_X_CSRF_TOKEN'] ?? null;
         if ($token === null || $token === '') {
             $data = $this->getRequestData();
-            $token = $data['csrf_token'] ?? ($data['_csrf_token'] ?? null);
+            $token = $data['_csrf_token'] ?? ($data['csrf_token'] ?? null);
         }
 
         if (!is_string($token) || $token === '') {
@@ -1131,7 +1153,7 @@ class DieuPhoiController
             return true;
         }
 
-        $sessionToken = $_SESSION['csrf_token'] ?? Session::get('csrf_token');
+        $sessionToken = $_SESSION['_csrf_token'] ?? ($_SESSION['csrf_token'] ?? Session::get('_csrf_token'));
         return is_string($sessionToken) && $sessionToken !== '' && hash_equals($sessionToken, $token);
     }
 
