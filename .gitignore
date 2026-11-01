@@ -1,8 +1,8 @@
 config/database.php
 .env
 /vendor
+.phpunit.result.cache
 .idea/
 .vscode/
 .DS_Store
 Thumbs.db
-

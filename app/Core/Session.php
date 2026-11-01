@@ -17,7 +17,21 @@ class Session
      */
     public static function start(): void
     {
-        // TODO: Khởi tạo và thiết lập bảo mật session
+        if (session_status() === PHP_SESSION_NONE) {
+            if (!headers_sent()) {
+                // Cấu hình cookie session an toàn: HttpOnly chống đọc qua XSS, SameSite chống CSRF
+                session_set_cookie_params([
+                    'lifetime' => 0,
+                    'path' => '/',
+                    'domain' => '',
+                    'secure' => isset($_SERVER['HTTPS']) && $_SERVER['HTTPS'] === 'on',
+                    'httponly' => true,
+                    'samesite' => 'Lax',
+                ]);
+            }
+
+            @session_start();
+        }
     }
 
     /**
@@ -29,8 +43,8 @@ class Session
      */
     public static function get(string $key, mixed $default = null): mixed
     {
-        // TODO: Lấy dữ liệu session theo key
-        return $default;
+        self::start();
+        return $_SESSION[$key] ?? $default;
     }
 
     /**
@@ -42,7 +56,20 @@ class Session
      */
     public static function set(string $key, mixed $value): void
     {
-        // TODO: Gán dữ liệu vào session theo key
+        self::start();
+        $_SESSION[$key] = $value;
+    }
+
+    /**
+     * Kiểm tra key có tồn tại trong session không
+     *
+     * @param string $key
+     * @return bool
+     */
+    public static function has(string $key): bool
+    {
+        self::start();
+        return isset($_SESSION[$key]);
     }
 
     /**
@@ -53,17 +80,21 @@ class Session
      */
     public static function remove(string $key): void
     {
-        // TODO: Xóa key khỏi session
+        self::start();
+        unset($_SESSION[$key]);
     }
 
     /**
-     * Tái tạo Session ID chống Session Fixation
+     * Tái tạo Session ID chống tấn công Session Fixation
      *
      * @return void
      */
     public static function regenerate(): void
     {
-        // TODO: Gọi session_regenerate_id(true)
+        self::start();
+        if (session_status() === PHP_SESSION_ACTIVE && !headers_sent()) {
+            @session_regenerate_id(true);
+        }
     }
 
     /**
@@ -73,7 +104,24 @@ class Session
      */
     public static function destroy(): void
     {
-        // TODO: Xóa toàn bộ dữ liệu session
+        self::start();
+        $_SESSION = [];
+
+        if (!headers_sent() && ini_get('session.use_cookies')) {
+            $params = session_get_cookie_params();
+            setcookie(
+                session_name(),
+                '',
+                time() - 42000,
+                $params['path'],
+                $params['domain'],
+                $params['secure'],
+                $params['httponly']
+            );
+        }
+
+        if (session_status() === PHP_SESSION_ACTIVE) {
+            @session_destroy();
+        }
     }
 }
-
