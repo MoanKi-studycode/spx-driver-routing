@@ -8,7 +8,19 @@
 (function () {
     'use strict';
 
-    const config = window.SPX_STATS_CONFIG || {};
+    function loadStatsConfig() {
+        const configEl = document.getElementById('spx-stats-config');
+        if (configEl && configEl.dataset && configEl.dataset.config) {
+            try {
+                return JSON.parse(configEl.dataset.config);
+            } catch (e) {
+                // ignore parse error and fallback
+            }
+        }
+        return window.SPX_STATS_CONFIG || {};
+    }
+
+    const config = loadStatsConfig();
     const baseUrl = config.baseUrl || '/dinh-tuyen-spx/public';
     const buuCuc = config.buuCuc || { id: 1 };
 
@@ -17,18 +29,6 @@
 
     let distanceChart = null;
     let timeChart = null;
-
-    function escapeHtml(value) {
-        if (value === null || value === undefined) {
-            return '';
-        }
-        return String(value)
-            .replace(/&/g, '&amp;')
-            .replace(/</g, '&lt;')
-            .replace(/>/g, '&gt;')
-            .replace(/"/g, '&quot;')
-            .replace(/'/g, '&#039;');
-    }
 
     function showAlert(type, message) {
         const alertBox = document.getElementById('alert-thong-ke');
@@ -41,8 +41,6 @@
     }
 
     function buildChartDatasets() {
-        // Nếu đã có các cụm tuyến thực tế trong DB thì vẽ các cụm + có thể chuyển sang xem Benchmark;
-        // Nếu chưa có cụm trong DB thì hiển thị trực tiếp 4 mốc Benchmark (10, 20, 30, 40 đơn)
         const hasClusters = danhSachCum.length > 0;
         const sourceItems = hasClusters ? danhSachCum : benchmarkData;
 
@@ -253,11 +251,17 @@
         }
     }
 
-    document.addEventListener('DOMContentLoaded', function () {
+    function bootstrapStatsPage() {
         renderCharts();
         const btnBenchmark = document.getElementById('btn-run-benchmark');
         if (btnBenchmark) {
             btnBenchmark.addEventListener('click', handleRunBenchmark);
         }
-    });
+    }
+
+    if (document.readyState === 'loading') {
+        document.addEventListener('DOMContentLoaded', bootstrapStatsPage);
+    } else {
+        bootstrapStatsPage();
+    }
 })();

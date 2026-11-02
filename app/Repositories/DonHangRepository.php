@@ -406,7 +406,8 @@ class DonHangRepository
     }
 
     /**
-     * Cập nhật kết quả giao hàng (giao_thanh_cong / giao_that_bai) chống bấm đúp theo Mục 4.2.4
+     * Cập nhật kết quả giao hàng (giao_thanh_cong / giao_that_bai) chống bấm đúp theo Mục 4.2.4,
+     * đồng thời tự động chuyển trạng thái `cum_tuyen_giao` sang `hoan_tat` khi toàn bộ đơn trong cụm đã xử lý xong.
      *
      * @param int $orderId
      * @param int $driverId
@@ -419,6 +420,12 @@ class DonHangRepository
         if (!in_array($status, ['giao_thanh_cong', 'giao_that_bai'], true)) {
             return false;
         }
+
+        $sqlCluster = 'SELECT cum_tuyen_id FROM don_hang WHERE id = :id AND tai_xe_id = :tx LIMIT 1';
+        $stmtCluster = $this->db->prepare($sqlCluster);
+        $stmtCluster->execute(['id' => $orderId, 'tx' => $driverId]);
+        $clusterIdRaw = $stmtCluster->fetchColumn();
+        $clusterId = $clusterIdRaw !== false && $clusterIdRaw !== null ? (int) $clusterIdRaw : null;
 
         $sql = 'UPDATE don_hang
                 SET trang_thai = :trang_thai_moi,
@@ -436,7 +443,25 @@ class DonHangRepository
             'tx' => $driverId,
         ]);
 
-        return $stmt->rowCount() > 0;
+        if ($stmt->rowCount() <= 0) {
+            return false;
+        }
+
+        // Mục 4.2.4: Nếu toàn bộ đơn trong cum_tuyen_giao đã khác da_phan_cong thì tự động chuyển sang hoan_tat
+        if ($clusterId !== null && $clusterId > 0) {
+            $stmtRemain = $this->db->prepare(
+                'SELECT COUNT(*) FROM don_hang WHERE cum_tuyen_id = :cum_tuyen_id AND trang_thai = \'da_phan_cong\''
+            );
+            $stmtRemain->execute(['cum_tuyen_id' => $clusterId]);
+            if ((int) $stmtRemain->fetchColumn() === 0) {
+                $stmtComplete = $this->db->prepare(
+                    'UPDATE cum_tuyen_giao SET trang_thai = \'hoan_tat\' WHERE id = :id AND trang_thai = \'dang_giao\''
+                );
+                $stmtComplete->execute(['id' => $clusterId]);
+            }
+        }
+
+        return true;
     }
 
     /**
