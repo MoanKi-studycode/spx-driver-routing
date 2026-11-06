@@ -1,9 +1,22 @@
 :root {
     --app-ink: #172033;
     --app-muted: #64748b;
-    --app-primary: #2563eb;
+    --app-primary: #EE4D2D;
     --app-surface: #ffffff;
     --app-background: #f3f6fb;
+    --spx-orange: #EE4D2D;
+    --spx-navy: #1E293B;
+    --spx-green: #10B981;
+    --spx-yellow: #F59E0B;
+    --spx-red: #EF4444;
+    --bs-primary: var(--spx-orange);
+    --bs-primary-rgb: 238, 77, 45;
+    --bs-success: var(--spx-green);
+    --bs-success-rgb: 16, 185, 129;
+    --bs-warning: var(--spx-yellow);
+    --bs-warning-rgb: 245, 158, 11;
+    --bs-danger: var(--spx-red);
+    --bs-danger-rgb: 239, 68, 68;
 }
 
 body {
@@ -13,7 +26,7 @@ body {
 }
 
 .app-navbar {
-    background: #10213f;
+    background: var(--spx-navy);
 }
 
 .auth-container {
@@ -39,6 +52,22 @@ body {
     letter-spacing: 0.1em;
 }
 
+.btn-primary {
+    --bs-btn-bg: var(--spx-orange);
+    --bs-btn-border-color: var(--spx-orange);
+    --bs-btn-hover-bg: #d94325;
+    --bs-btn-hover-border-color: #d94325;
+    --bs-btn-active-bg: #c83d22;
+    --bs-btn-active-border-color: #c83d22;
+}
+
+.btn-outline-primary {
+    --bs-btn-color: #d94325;
+    --bs-btn-border-color: var(--spx-orange);
+    --bs-btn-hover-bg: var(--spx-orange);
+    --bs-btn-hover-border-color: var(--spx-orange);
+}
+
 .driver-page {
     max-width: 1440px;
 }
@@ -48,6 +77,46 @@ body {
     height: min(62vh, 680px);
     border-radius: 0 0 1rem 1rem;
     background: #e8eef5;
+}
+
+.driver-map-container.is-collapsed {
+    display: none;
+}
+
+.driver-dialog {
+    width: min(92vw, 440px);
+    border: 0;
+    border-radius: 1rem;
+    padding: 1.5rem;
+    box-shadow: 0 1rem 3rem rgb(15 23 42 / 25%);
+}
+
+.driver-dialog::backdrop {
+    background: rgb(15 23 42 / 55%);
+}
+
+.tracking-progress {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 0.5rem;
+    padding-left: 1.25rem;
+    font-size: 0.8rem;
+}
+
+.tracking-progress li.is-complete,
+.tracking-progress li.is-current {
+    color: #047857;
+    font-weight: 700;
+}
+
+.tracking-progress li.is-failed {
+    color: var(--spx-red);
+    font-weight: 700;
+}
+
+.driver-dialog .btn,
+.driver-page .btn {
+    min-height: 44px;
 }
 
 .app-card {
@@ -62,6 +131,7 @@ body {
 
 .next-order-card {
     border-top: 4px solid var(--app-primary);
+    box-shadow: 0 0.5rem 1.5rem rgb(238 77 45 / 12%) !important;
 }
 
 .order-item {

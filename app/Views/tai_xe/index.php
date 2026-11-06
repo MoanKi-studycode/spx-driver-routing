@@ -102,8 +102,12 @@ $driverLocationJson = json_encode($driverLocation, JSON_UNESCAPED_UNICODE | JSON
                 </div>
                 <div class="d-flex flex-wrap gap-2">
                     <button class="btn btn-primary fw-semibold" id="use-gps" type="button">
-                        <i class="bi bi-geo-alt-fill me-1"></i>Định vị GPS &amp; Tối ưu lại tuyến
+                        <i class="bi bi-geo-alt-fill me-1"></i>Lấy vị trí hiện tại
                     </button>
+                    <label class="form-check form-switch d-flex align-items-center gap-2 mb-0 px-3 py-2 border rounded bg-white">
+                        <input class="form-check-input m-0" id="toggle-gps" type="checkbox" role="switch">
+                        <span class="small fw-semibold">Cập nhật GPS liên tục</span>
+                    </label>
                     <button class="btn btn-outline-dark" id="choose-location" type="button">
                         <i class="bi bi-crosshair me-1"></i>Giả lập vị trí trên bản đồ
                     </button>
@@ -170,10 +174,13 @@ $driverLocationJson = json_encode($driverLocation, JSON_UNESCAPED_UNICODE | JSON
                     <h2 class="h6 fw-bold mb-0">
                         <i class="bi bi-sign-turn-right-fill text-primary me-1"></i>Bản Đồ Dẫn Đường Thực Tế &amp; Thứ Tự Điểm Giao (1..n)
                     </h2>
-                    <span class="badge bg-light text-secondary border" id="map-status" aria-live="polite">Đang tải bản đồ lộ trình...</span>
+                    <div class="d-flex flex-wrap align-items-center gap-2">
+                        <span class="badge bg-light text-secondary border" id="map-status" aria-live="polite">Đang tải bản đồ lộ trình...</span>
+                        <button class="btn btn-sm btn-outline-secondary" id="toggle-map" type="button" aria-expanded="true" aria-controls="driver-map">Thu gọn bản đồ</button>
+                    </div>
                 </div>
-                <div class="card-body p-0">
-                    <div class="driver-map" id="driver-map" style="height: 560px;" role="region" aria-label="Bản đồ tài xế"></div>
+                <div class="card-body p-0 driver-map-container">
+                    <div class="driver-map" id="driver-map" role="region" aria-label="Bản đồ tài xế"></div>
                 </div>
                 <div class="card-footer bg-white small text-muted d-flex flex-wrap gap-3">
                     <span><span class="badge rounded-pill" style="background:#ee4d2d;">P0</span> Bưu cục xuất phát</span>
@@ -208,7 +215,11 @@ $driverLocationJson = json_encode($driverLocation, JSON_UNESCAPED_UNICODE | JSON
                                 <i class="bi bi-geo-alt me-1"></i><?php echo $escape($orders[0]['dia_chi_giao_hang'] ?? ''); ?>
                             </p>
                             <p class="small fw-bold text-danger mb-0">
-                                Thu hộ COD: <?php echo $escape(number_format((float) ($orders[0]['tien_thu_ho'] ?? 0), 0, ',', '.')); ?> đ
+                                <?php if ((float) ($orders[0]['tien_thu_ho'] ?? 0) > 0): ?>
+                                    Cần thu COD: <?php echo $escape(number_format((float) $orders[0]['tien_thu_ho'], 0, ',', '.')); ?> đ
+                                <?php else: ?>
+                                    Đơn 0đ - Không thu tiền
+                                <?php endif; ?>
                             </p>
                         <?php else: ?>
                             <p class="text-success fw-semibold mb-0">
@@ -264,4 +275,24 @@ $driverLocationJson = json_encode($driverLocation, JSON_UNESCAPED_UNICODE | JSON
             </section>
         </aside>
     </div>
+    <dialog class="driver-dialog" id="failure-reason-dialog" aria-labelledby="failure-reason-title">
+        <form id="failure-reason-form">
+            <h2 class="h5" id="failure-reason-title">Lý do giao thất bại</h2>
+            <label class="form-label" for="failure-reason-choice">Chọn lý do</label>
+            <select class="form-select" id="failure-reason-choice" required>
+                <option value="">-- Chọn lý do --</option>
+                <option value="Không liên hệ được">Không liên hệ được</option>
+                <option value="Hẹn giao lại">Hẹn giao lại</option>
+                <option value="Sai địa chỉ/SĐT">Sai địa chỉ/SĐT</option>
+                <option value="Khách từ chối">Khách từ chối</option>
+                <option value="other">Lý do khác</option>
+            </select>
+            <label class="form-label mt-3 d-none" id="failure-reason-note-label" for="failure-reason-note">Ghi chú (tối đa 200 ký tự)</label>
+            <textarea class="form-control d-none" id="failure-reason-note" maxlength="200" rows="3"></textarea>
+            <div class="d-flex justify-content-end gap-2 mt-4">
+                <button class="btn btn-outline-secondary" id="cancel-failure-reason" type="button">Hủy</button>
+                <button class="btn btn-danger" type="submit">Xác nhận thất bại</button>
+            </div>
+        </form>
+    </dialog>
 </main>
