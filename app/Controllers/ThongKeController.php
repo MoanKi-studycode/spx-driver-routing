@@ -20,7 +20,9 @@ use Throwable;
 
 /**
  * Class ThongKeController
- * Quản lý màn hình Thống kê và thực nghiệm thuật toán (Baseline vs Nearest Neighbor vs 2-Opt).
+ * Quản lý màn hình Thống kê gồm 2 Tab:
+ * - Tab 1: Quản trị Vận hành Bưu cục & Đối soát COD cuối ngày
+ * - Tab 2: Đánh giá & Thực nghiệm Thuật toán (Baseline vs Nearest Neighbor vs 2-Opt)
  */
 class ThongKeController
 {
@@ -42,7 +44,7 @@ class ThongKeController
     }
 
     /**
-     * Hiển thị màn hình Thống kê & Thực nghiệm Thuật toán (/thong-ke)
+     * Hiển thị màn hình Thống kê Vận hành & Thực nghiệm Thuật toán (/thong-ke)
      *
      * @return void
      */
@@ -65,11 +67,18 @@ class ThongKeController
         $buuCuc = $this->buuCucRepo->getById($buuCucId) ?? $this->getDefaultBuuCuc();
         $danhSachBuuCuc = $this->buuCucRepo->getAllActive();
         $danhSachCum = $this->cumTuyenRepo->getClusters(null, (int) $buuCuc['id']);
-        $summary = $this->buildSummaryMetrics($danhSachCum);
+
+        // Dữ liệu vận hành thực tế (Tab 1)
+        $thongKeTrangThai = $this->donHangRepo->thongKeTrangThaiDonHang((int) $buuCuc['id']);
+        $thongKeTaiXeCod = $this->donHangRepo->thongKeHieuSuatVaCodTheoTaiXe((int) $buuCuc['id']);
+        $thongKeTheoPhuong = $this->donHangRepo->thongKeDonHangTheoPhuong((int) $buuCuc['id']);
+
+        // Dữ liệu học thuật & Benchmark (Tab 2)
+        $summary = $this->buildSummaryMetrics($danhSachCum, $thongKeTrangThai);
         $benchmarkData = $this->runBenchmarkSuite($buuCuc);
 
         $baseUrl = defined('BASE_URL') ? BASE_URL : '/dinh-tuyen-spx/public';
-        $pageTitle = 'Thống Kê & Thực Nghiệm Thuật Toán - ' . ($buuCuc['ten_buu_cuc'] ?? 'SPX Express');
+        $pageTitle = 'Thống Kê Vận Hành & Thực Nghiệm Thuật Toán - ' . ($buuCuc['ten_buu_cuc'] ?? 'SPX Express');
         $csrfToken = class_exists(Csrf::class) ? Csrf::getToken() : (string) ($_SESSION['_csrf_token'] ?? '');
 
         $viewData = [
@@ -81,6 +90,9 @@ class ThongKeController
             'danhSachBuuCuc' => $danhSachBuuCuc,
             'danhSachCum' => $danhSachCum,
             'tongHop' => $summary,
+            'thongKeTrangThai' => $thongKeTrangThai,
+            'thongKeTaiXeCod' => $thongKeTaiXeCod,
+            'thongKeTheoPhuong' => $thongKeTheoPhuong,
             'benchmarkData' => $benchmarkData,
         ];
 
@@ -88,7 +100,7 @@ class ThongKeController
     }
 
     /**
-     * API lấy dữ liệu cụm tuyến và chạy Benchmark so sánh thuật toán (GET /api/thong-ke/so-lieu)
+     * API lấy dữ liệu vận hành, cụm tuyến và chạy Benchmark so sánh thuật toán (GET /api/thong-ke/so-lieu)
      *
      * @return void
      */
@@ -105,12 +117,18 @@ class ThongKeController
 
             $buuCuc = $this->buuCucRepo->getById($buuCucId) ?? $this->getDefaultBuuCuc();
             $danhSachCum = $this->cumTuyenRepo->getClusters(null, (int) $buuCuc['id']);
-            $summary = $this->buildSummaryMetrics($danhSachCum);
+            $thongKeTrangThai = $this->donHangRepo->thongKeTrangThaiDonHang((int) $buuCuc['id']);
+            $thongKeTaiXeCod = $this->donHangRepo->thongKeHieuSuatVaCodTheoTaiXe((int) $buuCuc['id']);
+            $thongKeTheoPhuong = $this->donHangRepo->thongKeDonHangTheoPhuong((int) $buuCuc['id']);
+            $summary = $this->buildSummaryMetrics($danhSachCum, $thongKeTrangThai);
             $benchmark = $this->runBenchmarkSuite($buuCuc);
 
-            $this->sendJson(true, 'Lấy số liệu thống kê và kết quả thực nghiệm thuật toán thành công.', [
+            $this->sendJson(true, 'Lấy số liệu thống kê vận hành và kết quả thực nghiệm thuật toán thành công.', [
                 'buu_cuc' => $buuCuc,
                 'tong_hop' => $summary,
+                'thong_ke_trang_thai' => $thongKeTrangThai,
+                'thong_ke_tai_xe_cod' => $thongKeTaiXeCod,
+                'thong_ke_theo_phuong' => $thongKeTheoPhuong,
                 'danh_sach_cum' => $danhSachCum,
                 'benchmark' => $benchmark,
             ]);
@@ -120,12 +138,13 @@ class ThongKeController
     }
 
     /**
-     * Tổng hợp các chỉ số KPI từ danh sách các cụm tuyến của Bưu cục
+     * Tổng hợp các chỉ số KPI từ danh sách các cụm tuyến và trạng thái đơn hàng của Bưu cục
      *
      * @param array $clusters
+     * @param array $statusStats
      * @return array
      */
-    private function buildSummaryMetrics(array $clusters): array
+    private function buildSummaryMetrics(array $clusters, array $statusStats = []): array
     {
         $soCum = count($clusters);
         $tongSoDon = 0;
@@ -161,9 +180,15 @@ class ThongKeController
         return [
             'so_cum' => $soCum,
             'tong_so_don' => $tongSoDon,
-            'tong_don_da_giao' => $tongDonDaGiao,
-            'tong_don_that_bai' => $tongDonThatBai,
-            'tong_don_dang_cho' => $tongDonDangCho,
+            'tong_so_don_hom_nay' => (int) ($statusStats['tong_so_don'] ?? $tongSoDon),
+            'so_don_chua_phan_cong' => (int) ($statusStats['chua_phan_cong'] ?? 0),
+            'tong_don_da_giao' => (int) ($statusStats['giao_thanh_cong'] ?? $tongDonDaGiao),
+            'tong_don_that_bai' => (int) ($statusStats['giao_that_bai'] ?? $tongDonThatBai),
+            'tong_don_dang_cho' => (int) ($statusStats['da_phan_cong'] ?? $tongDonDangCho),
+            'ty_le_thanh_cong_sla' => (float) ($statusStats['ty_le_thanh_cong_sla'] ?? 0.0),
+            'cod_da_thu' => (float) ($statusStats['cod_da_thu'] ?? 0.0),
+            'tong_cod_phai_thu_tren_tuyen' => (float) ($statusStats['tong_cod_phai_thu_tren_tuyen'] ?? 0.0),
+            'tong_cod_toan_buu_cuc' => (float) ($statusStats['tong_cod_toan_buu_cuc'] ?? 0.0),
             'tong_km_baseline' => round($tongKmBaseline, 2),
             'tong_km_nn' => round($tongKmNn, 2),
             'tong_km_toi_uu' => round($tongKmToiUu, 2),
@@ -306,7 +331,7 @@ class ThongKeController
                 ];
             }
         } catch (Throwable) {
-            // Bỏ qua nếu không đọc được file, sẽ sinh tọa độ tất định bên dưới
+            // Bỏ qua nếu không đọc được file
         }
 
         while (count($validPool) < 40) {

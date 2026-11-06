@@ -22,7 +22,8 @@ use Throwable;
 
 /**
  * Class DieuPhoiController
- * Quản lý màn hình Điều phối, đồng bộ Mock Shopee API, phân cụm K-Means và sửa đơn lỗi.
+ * Quản lý màn hình Điều phối, đồng bộ Mock Shopee API, phân cụm K-Means (có Dispatch Lock),
+ * sửa đơn lỗi tọa độ (Nominatim Draggable Preview) và chuyển cụm/đổi tài xế thủ công.
  */
 class DieuPhoiController
 {
@@ -102,6 +103,9 @@ class DieuPhoiController
 
     /**
      * API đồng bộ Mock API, chạy Balanced K-Means + NN + 2-Opt từ P0 (POST /api/dieu-phoi/phan-cum-toi-uu)
+     * Hỗ trợ Dispatch Lock (Mục 3.B):
+     * - Mặc định (`reset_all = false`): Giữ nguyên các cụm tuyến đang đi giao và chỉ phân cụm bổ sung các đơn `chua_phan_cong`.
+     * - Khi Điều phối viên xác nhận (`reset_all = true`): Reset toàn bộ cụm tuyến của Bưu cục và phân cụm lại từ đầu.
      *
      * @return void
      */
@@ -116,6 +120,9 @@ class DieuPhoiController
             return;
         }
 
+        $input = $this->getRequestData();
+        $resetAll = !empty($input['reset_all']) && ($input['reset_all'] === true || $input['reset_all'] === '1' || $input['reset_all'] === 1);
+
         try {
             $buuCucId = $this->getCurrentBuuCucId();
             $buuCuc = $this->buuCucRepo->getById($buuCucId) ?? $this->getDefaultBuuCuc();
@@ -125,6 +132,13 @@ class DieuPhoiController
             $payload = $mockService->fetchOrders();
 
             $this->db->beginTransaction();
+
+            // Nếu Điều phối viên xác nhận "Reset & Phân cụm lại toàn bộ" qua Confirm Modal
+            $soDonReset = 0;
+            if ($resetAll) {
+                $soDonReset = $this->donHangRepo->resetAllAssignedOrdersByBuuCuc((int) $buuCuc['id']);
+                $this->cumTuyenRepo->deleteByBuuCuc((int) $buuCuc['id']);
+            }
 
             // 1. Kiểm tra và lọc đơn hàng đầu vào qua InboundService (Mục 2.3)
             $existingCodeMap = $this->donHangRepo->getExistingMaVanDonMap();
@@ -137,7 +151,7 @@ class DieuPhoiController
 
             $soDonMoiLuu = $this->donHangRepo->batchInsert($inboundResult['tat_ca_don_can_luu']);
 
-            // 2. Lấy toàn bộ đơn hàng hợp lệ đang chờ phân công của bưu cục hiện tại
+            // 2. Lấy toàn bộ đơn hàng hợp lệ đang chờ phân công (`chua_phan_cong`) của bưu cục hiện tại
             $unassignedOrders = $this->donHangRepo->getUnassignedValidOrders((int) $buuCuc['id']);
             $activeDrivers = $this->nguoiDungRepo->getActiveDrivers((int) $buuCuc['id']);
 
@@ -183,7 +197,8 @@ class DieuPhoiController
                 $soDonQuaTai = $this->donHangRepo->markOverloadedOrders($overloadIds, (int) $buuCuc['id']);
             }
 
-            $createdClusters = [];
+            $createdOrUpdatedClusters = [];
+            $soCumGiuNguyenLock = 0;
 
             // 3. Chạy thuật toán Phân cụm Balanced K-Means & Tối ưu lộ trình NN + 2-Opt từ P0
             if (!empty($ordersToCluster) && !empty($availableDrivers)) {
@@ -207,75 +222,98 @@ class DieuPhoiController
                 foreach ($clusters as $idx => $clusterItem) {
                     $clusterOrders = $clusterItem['don_hang'] ?? [];
                     if (empty($clusterOrders)) {
-                        // Cụm không có đơn nào bị loại bỏ, không tạo bản ghi cum_tuyen_giao (Mục 3.1.3)
                         continue;
                     }
 
                     $driver = $clusterItem['tai_xe'] ?? $availableDrivers[$idx % count($availableDrivers)];
                     $driverId = (int) $driver['id'];
-                    $centroid = $clusterItem['tam_cum'] ?? $this->calculateCentroid($clusterOrders, $depot);
 
-                    $planResult = $this->runRouteOptimization($depot, $clusterOrders);
-                    $orderedPoints = $planResult['thu_tu'] ?? $clusterOrders;
+                    // Dispatch Lock: Nếu tài xế đang có cụm `dang_giao` và không phải chế độ reset_all,
+                    // gộp các đơn mới vào cụm đang giao của tài xế đó và tái tối ưu các điểm chưa giao (giữ nguyên các đơn đã giao!)
+                    $existingOpenCluster = !$resetAll
+                        ? $this->cumTuyenRepo->getOpenClusterByDriver($driverId, (int) $buuCuc['id'])
+                        : null;
 
-                    $kmBaseline = (float) ($planResult['km_baseline'] ?? 0.0);
-                    $kmNn = (float) ($planResult['km_nn'] ?? 0.0);
-                    $kmToiUu = (float) ($planResult['km_toi_uu'] ?? 0.0);
-                    $tyLeTietKiem = $kmBaseline > 0.0
-                        ? round((($kmBaseline - $kmToiUu) / $kmBaseline) * 100, 2)
-                        : 0.0;
-                    $thoiGianChayMs = (float) ($planResult['thoi_gian_chay_ms'] ?? 0.0);
+                    if ($existingOpenCluster !== null) {
+                        $clusterId = (int) $existingOpenCluster['id'];
+                        $currentSeq = (int) ($existingOpenCluster['so_don_hang'] ?? 0);
+                        foreach (array_values($clusterOrders) as $point) {
+                            $currentSeq++;
+                            $this->donHangRepo->assignToCluster(
+                                (int) $point['id'],
+                                $clusterId,
+                                $driverId,
+                                $currentSeq
+                            );
+                        }
 
-                    $maCumTuyen = sprintf(
-                        'CUM_%s_BC%d_TX%d_%s',
-                        date('YmdHis'),
-                        (int) $buuCuc['id'],
-                        $driverId,
-                        substr(uniqid('', true), -4)
-                    );
+                        $recalc = $this->recalculateClusterRoutePreservingCompleted($clusterId, $depot);
+                        $soCumGiuNguyenLock++;
+                        $createdOrUpdatedClusters[] = array_merge($existingOpenCluster, $recalc);
+                    } else {
+                        $centroid = $clusterItem['tam_cum'] ?? $this->calculateCentroid($clusterOrders, $depot);
+                        $planResult = $this->runRouteOptimization($depot, $clusterOrders);
+                        $orderedPoints = $planResult['thu_tu'] ?? $clusterOrders;
 
-                    $clusterId = $this->cumTuyenRepo->create([
-                        'buu_cuc_id' => (int) $buuCuc['id'],
-                        'ma_cum_tuyen' => $maCumTuyen,
-                        'ma_lo' => $batchCode,
-                        'tai_xe_id' => $driverId,
-                        'vi_do_tam_cum' => (float) $centroid['vi_do'],
-                        'kinh_do_tam_cum' => (float) $centroid['kinh_do'],
-                        'vi_do_xuat_phat' => $depot['vi_do'],
-                        'kinh_do_xuat_phat' => $depot['kinh_do'],
-                        'so_don_hang' => count($orderedPoints),
-                        'km_baseline' => $kmBaseline,
-                        'km_nn' => $kmNn,
-                        'km_toi_uu' => $kmToiUu,
-                        'ty_le_tiet_kiem_phan_tram' => $tyLeTietKiem,
-                        'thoi_gian_chay_ms' => $thoiGianChayMs,
-                        'trang_thai' => 'dang_giao',
-                    ]);
+                        $kmBaseline = (float) ($planResult['km_baseline'] ?? 0.0);
+                        $kmNn = (float) ($planResult['km_nn'] ?? 0.0);
+                        $kmToiUu = (float) ($planResult['km_toi_uu'] ?? 0.0);
+                        $tyLeTietKiem = $kmBaseline > 0.0
+                            ? round((($kmBaseline - $kmToiUu) / $kmBaseline) * 100, 2)
+                            : 0.0;
+                        $thoiGianChayMs = (float) ($planResult['thoi_gian_chay_ms'] ?? 0.0);
 
-                    foreach (array_values($orderedPoints) as $seqIndex => $point) {
-                        $this->donHangRepo->assignToCluster(
-                            (int) $point['id'],
-                            $clusterId,
+                        $maCumTuyen = sprintf(
+                            'CUM_%s_BC%d_TX%d_%s',
+                            date('YmdHis'),
+                            (int) $buuCuc['id'],
                             $driverId,
-                            $seqIndex + 1
+                            substr(uniqid('', true), -4)
                         );
-                    }
 
-                    $createdClusters[] = [
-                        'id' => $clusterId,
-                        'ma_cum_tuyen' => $maCumTuyen,
-                        'tai_xe_id' => $driverId,
-                        'ten_tai_xe' => $driver['ho_ten'] ?? ('Tài xế #' . $driverId),
-                        'mau_sac_cum' => $driver['mau_sac_cum'] ?? '#2563eb',
-                        'so_don_hang' => count($orderedPoints),
-                        'vi_do_tam_cum' => (float) $centroid['vi_do'],
-                        'kinh_do_tam_cum' => (float) $centroid['kinh_do'],
-                        'km_baseline' => $kmBaseline,
-                        'km_nn' => $kmNn,
-                        'km_toi_uu' => $kmToiUu,
-                        'ty_le_tiet_kiem_phan_tram' => $tyLeTietKiem,
-                        'thoi_gian_chay_ms' => $thoiGianChayMs,
-                    ];
+                        $clusterId = $this->cumTuyenRepo->create([
+                            'buu_cuc_id' => (int) $buuCuc['id'],
+                            'ma_cum_tuyen' => $maCumTuyen,
+                            'ma_lo' => $batchCode,
+                            'tai_xe_id' => $driverId,
+                            'vi_do_tam_cum' => (float) $centroid['vi_do'],
+                            'kinh_do_tam_cum' => (float) $centroid['kinh_do'],
+                            'vi_do_xuat_phat' => $depot['vi_do'],
+                            'kinh_do_xuat_phat' => $depot['kinh_do'],
+                            'so_don_hang' => count($orderedPoints),
+                            'km_baseline' => $kmBaseline,
+                            'km_nn' => $kmNn,
+                            'km_toi_uu' => $kmToiUu,
+                            'ty_le_tiet_kiem_phan_tram' => $tyLeTietKiem,
+                            'thoi_gian_chay_ms' => $thoiGianChayMs,
+                            'trang_thai' => 'dang_giao',
+                        ]);
+
+                        foreach (array_values($orderedPoints) as $seqIndex => $point) {
+                            $this->donHangRepo->assignToCluster(
+                                (int) $point['id'],
+                                $clusterId,
+                                $driverId,
+                                $seqIndex + 1
+                            );
+                        }
+
+                        $createdOrUpdatedClusters[] = [
+                            'id' => $clusterId,
+                            'ma_cum_tuyen' => $maCumTuyen,
+                            'tai_xe_id' => $driverId,
+                            'ten_tai_xe' => $driver['ho_ten'] ?? ('Tài xế #' . $driverId),
+                            'mau_sac_cum' => $driver['mau_sac_cum'] ?? '#2563eb',
+                            'so_don_hang' => count($orderedPoints),
+                            'vi_do_tam_cum' => (float) $centroid['vi_do'],
+                            'kinh_do_tam_cum' => (float) $centroid['kinh_do'],
+                            'km_baseline' => $kmBaseline,
+                            'km_nn' => $kmNn,
+                            'km_toi_uu' => $kmToiUu,
+                            'ty_le_tiet_kiem_phan_tram' => $tyLeTietKiem,
+                            'thoi_gian_chay_ms' => $thoiGianChayMs,
+                        ];
+                    }
                 }
             }
 
@@ -283,17 +321,36 @@ class DieuPhoiController
 
             $allClusters = $this->cumTuyenRepo->getClusters(null, (int) $buuCuc['id']);
             $errorOrders = $this->donHangRepo->getErrorOrders((int) $buuCuc['id']);
+            $allOrders = $this->donHangRepo->getOrdersByBuuCuc((int) $buuCuc['id']);
             $mapClusters = $this->buildClusterMapPayload($allClusters, $buuCuc);
 
-            $thongBao = sprintf(
-                'Đã đồng bộ %d đơn mới, phân cụm thành công %d đơn vào %d cụm tuyến. Phát hiện %d đơn cần xử lý ngoại lệ.',
-                $soDonMoiLuu,
-                count($ordersToCluster),
-                count($createdClusters),
-                count($errorOrders)
-            );
+            if ($resetAll) {
+                $thongBao = sprintf(
+                    'Đã Reset %d đơn cũ & phân cụm lại toàn bộ: %d đơn hợp lệ vào %d cụm tuyến mới. Có %d đơn lỗi cần xác minh.',
+                    $soDonReset,
+                    count($ordersToCluster),
+                    count($createdOrUpdatedClusters),
+                    count($errorOrders)
+                );
+            } elseif (empty($ordersToCluster) && !empty($allClusters)) {
+                $thongBao = sprintf(
+                    '[Dispatch Lock] Đã bảo vệ %d cụm tuyến đang giao thực tế. Hiện không có đơn chờ phân công mới (còn %d đơn lỗi tọa độ cần sửa).',
+                    count($allClusters),
+                    count($errorOrders)
+                );
+            } else {
+                $thongBao = sprintf(
+                    'Đã đồng bộ %d đơn mới từ Shopee, phân công %d đơn chờ vào %d cụm tuyến (Dispatch Lock bảo vệ %d cụm đang chạy). Phát hiện %d đơn lỗi tọa độ.',
+                    $soDonMoiLuu,
+                    count($ordersToCluster),
+                    count($createdOrUpdatedClusters),
+                    $soCumGiuNguyenLock,
+                    count($errorOrders)
+                );
+            }
 
             $this->sendJson(true, $thongBao, [
+                'che_do_reset' => $resetAll,
                 'thong_ke_inbound' => [
                     'ma_lo' => $inboundResult['ma_lo'],
                     'tong_so_don_trong_lo' => $inboundResult['tong_so_don_trong_lo'],
@@ -304,9 +361,10 @@ class DieuPhoiController
                     'so_don_bo_qua_do_trung' => $inboundResult['so_don_bo_qua_do_trung'],
                     'so_don_qua_tai_tai_xe' => $soDonQuaTai,
                 ],
-                'cum_vua_tao' => $createdClusters,
+                'cum_vua_tao' => $createdOrUpdatedClusters,
                 'danh_sach_cum' => $mapClusters,
                 'danh_sach_don_loi' => $errorOrders,
+                'tat_ca_don_hang' => $allOrders,
             ]);
         } catch (Throwable $e) {
             if ($this->db->inTransaction()) {
@@ -317,7 +375,7 @@ class DieuPhoiController
     }
 
     /**
-     * API sửa nhanh đơn lỗi tọa độ/phường và gán vào cụm gần nhất (POST /api/dieu-phoi/sua-don-loi)
+     * API sửa nhanh đơn lỗi tọa độ/phường VÀ hỗ trợ Chuyển cụm / Đổi tài xế thủ công (POST /api/dieu-phoi/sua-don-loi)
      *
      * @return void
      */
@@ -333,7 +391,30 @@ class DieuPhoiController
         }
 
         $input = $this->getRequestData();
+        $action = isset($input['hanh_dong']) ? trim((string) $input['hanh_dong']) : '';
         $orderId = (int) ($input['don_hang_id'] ?? ($input['id'] ?? 0));
+
+        $buuCucId = $this->getCurrentBuuCucId();
+        $buuCuc = $this->buuCucRepo->getById($buuCucId) ?? $this->getDefaultBuuCuc();
+
+        if ($orderId <= 0) {
+            $this->sendJson(false, 'Vui lòng chọn đơn hàng hợp lệ.', [], 422);
+            return;
+        }
+
+        $order = $this->donHangRepo->getById($orderId, (int) $buuCuc['id']);
+        if ($order === null) {
+            $this->sendJson(false, 'Không tìm thấy đơn hàng thuộc Bưu cục hiện tại.', [], 404);
+            return;
+        }
+
+        // Nhánh 1: Chuyển cụm / Đổi tài xế thủ công cho đơn hàng đang chờ giao (Mục 3.B.2)
+        if ($action === 'chuyen_cum' || ($order['trang_thai'] === 'da_phan_cong' && isset($input['cum_tuyen_dich_id']))) {
+            $this->handleManualClusterTransfer($input, $buuCuc, $order);
+            return;
+        }
+
+        // Nhánh 2: Sửa đơn lỗi tọa độ / phường và gán vào cụm gần nhất (Mục 3.B.3 & 5.2)
         $phuongId = (int) ($input['phuong_id'] ?? 0);
         $rawLat = $input['vi_do'] ?? null;
         $rawLng = $input['kinh_do'] ?? null;
@@ -342,17 +423,8 @@ class DieuPhoiController
             ? (int) $input['cum_tuyen_id']
             : null;
 
-        if ($orderId <= 0 || $phuongId <= 0) {
-            $this->sendJson(false, 'Vui lòng chọn đơn hàng và Phường/Xã hợp lệ.', [], 422);
-            return;
-        }
-
-        $buuCucId = $this->getCurrentBuuCucId();
-        $buuCuc = $this->buuCucRepo->getById($buuCucId) ?? $this->getDefaultBuuCuc();
-
-        $order = $this->donHangRepo->getById($orderId, (int) $buuCuc['id']);
-        if ($order === null) {
-            $this->sendJson(false, 'Không tìm thấy đơn hàng thuộc Bưu cục hiện tại.', [], 404);
+        if ($phuongId <= 0) {
+            $this->sendJson(false, 'Vui lòng chọn Phường/Xã thuộc vùng phục vụ của Bưu cục.', [], 422);
             return;
         }
 
@@ -393,7 +465,6 @@ class DieuPhoiController
         $kinhDo = (float) $coordValidation['kinh_do'];
         $maxClusterCapacity = (int) ($buuCuc['suc_chua_moi_cum'] ?? 20);
 
-        // Tìm cụm gần nhất còn chỗ (Mục 5.2)
         $clusters = $this->cumTuyenRepo->getClusters(null, (int) $buuCuc['id']);
         $activeClusters = array_values(array_filter(
             $clusters,
@@ -403,7 +474,7 @@ class DieuPhoiController
         if (empty($activeClusters)) {
             $this->sendJson(
                 false,
-                'Hiện chưa có cụm tuyến nào đang hoạt động. Vui lòng bấm "Đồng bộ & Phân cụm K-Means" trước.',
+                'Hiện chưa có cụm tuyến nào đang hoạt động. Vui lòng bấm "Đồng bộ & Phân cụm" trước.',
                 [],
                 422
             );
@@ -448,17 +519,6 @@ class DieuPhoiController
             return;
         }
 
-        // Quy tắc bắt buộc Mục 5.2: Chỉ cho phép khi cụm chưa có đơn nào ở trạng thái giao_thanh_cong / giao_that_bai; ngược lại trả mã 409
-        if ($this->cumTuyenRepo->hasProcessedOrders($clusterId)) {
-            $this->sendJson(
-                false,
-                'Không thể gán bổ sung vào cụm này vì tài xế đã bắt đầu giao hàng (có đơn đã hoàn tất hoặc thất bại).',
-                [],
-                409
-            );
-            return;
-        }
-
         try {
             $this->db->beginTransaction();
 
@@ -480,49 +540,25 @@ class DieuPhoiController
                 ((int) $targetCluster['so_don_hang']) + 1
             );
 
-            // Lấy toàn bộ đơn trong cụm để tính lại tâm cụm và chạy lại NN + 2-Opt từ Bưu cục P0 (Mục 5.2)
-            $clusterOrders = $this->donHangRepo->getOrdersByCluster($clusterId);
             $depot = [
                 'vi_do' => (float) $buuCuc['vi_do'],
                 'kinh_do' => (float) $buuCuc['kinh_do'],
             ];
 
-            $newCentroid = $this->calculateCentroid($clusterOrders, $depot);
-            $planResult = $this->runRouteOptimization($depot, $clusterOrders);
-            $orderedPoints = $planResult['thu_tu'] ?? $clusterOrders;
-
-            foreach (array_values($orderedPoints) as $seqIndex => $point) {
-                $this->donHangRepo->updateSequence((int) $point['id'], $clusterId, $seqIndex + 1);
-            }
-
-            $kmBaseline = (float) ($planResult['km_baseline'] ?? 0.0);
-            $kmNn = (float) ($planResult['km_nn'] ?? 0.0);
-            $kmToiUu = (float) ($planResult['km_toi_uu'] ?? 0.0);
-            $tyLeTietKiem = $kmBaseline > 0.0
-                ? round((($kmBaseline - $kmToiUu) / $kmBaseline) * 100, 2)
-                : 0.0;
-
-            $this->cumTuyenRepo->updateMetrics($clusterId, [
-                'so_don_hang' => count($orderedPoints),
-                'vi_do_tam_cum' => (float) $newCentroid['vi_do'],
-                'kinh_do_tam_cum' => (float) $newCentroid['kinh_do'],
-                'km_baseline' => $kmBaseline,
-                'km_nn' => $kmNn,
-                'km_toi_uu' => $kmToiUu,
-                'ty_le_tiet_kiem_phan_tram' => $tyLeTietKiem,
-                'thoi_gian_chay_ms' => (float) ($planResult['thoi_gian_chay_ms'] ?? 0.0),
-            ]);
+            // Tính lại thứ tự giao và quãng đường bằng DieuPhoiLoTrinhService (bảo toàn các đơn đã giao trong cụm)
+            $this->recalculateClusterRoutePreservingCompleted($clusterId, $depot);
 
             $this->db->commit();
 
             $updatedClusters = $this->cumTuyenRepo->getClusters(null, (int) $buuCuc['id']);
             $remainingErrors = $this->donHangRepo->getErrorOrders((int) $buuCuc['id']);
+            $allOrders = $this->donHangRepo->getOrdersByBuuCuc((int) $buuCuc['id']);
             $mapClusters = $this->buildClusterMapPayload($updatedClusters, $buuCuc);
 
             $this->sendJson(
                 true,
                 sprintf(
-                    'Đã cập nhật đơn %s và gán vào cụm %s (%s). Lộ trình 2-Opt đã được tính lại từ Bưu cục.',
+                    'Đã cập nhật tọa độ đơn %s và gán vào tuyến %s (%s). Lộ trình 2-Opt đã được tối ưu lại.',
                     (string) $order['ma_van_don'],
                     (string) $targetCluster['ma_cum_tuyen'],
                     (string) ($targetCluster['ten_tai_xe'] ?? '')
@@ -532,6 +568,7 @@ class DieuPhoiController
                     'cum_tuyen_id' => $clusterId,
                     'danh_sach_cum' => $mapClusters,
                     'danh_sach_don_loi' => $remainingErrors,
+                    'tat_ca_don_hang' => $allOrders,
                 ]
             );
         } catch (Throwable $e) {
@@ -540,6 +577,212 @@ class DieuPhoiController
             }
             $this->sendJson(false, 'Lỗi khi cập nhật và gán cụm cho đơn hàng: ' . $e->getMessage(), [], 500);
         }
+    }
+
+    /**
+     * Xử lý nghiệp vụ Chuyển cụm / Đổi tài xế thủ công cho đơn hàng đang chờ giao (Mục 3.B.2)
+     *
+     * @param array $input
+     * @param array $buuCuc
+     * @param array $order
+     * @return void
+     */
+    private function handleManualClusterTransfer(array $input, array $buuCuc, array $order): void
+    {
+        $orderId = (int) $order['id'];
+        $sourceClusterId = (int) ($order['cum_tuyen_id'] ?? 0);
+        $targetClusterId = (int) ($input['cum_tuyen_dich_id'] ?? ($input['cum_tuyen_id'] ?? 0));
+
+        if ($order['trang_thai'] !== 'da_phan_cong') {
+            $this->sendJson(
+                false,
+                'Chỉ có thể chuyển tuyến cho các đơn hàng đang ở trạng thái "Đang chờ giao". Đơn đã hoàn tất không thể chuyển.',
+                [],
+                409
+            );
+            return;
+        }
+
+        if ($targetClusterId <= 0 || $targetClusterId === $sourceClusterId) {
+            $this->sendJson(false, 'Vui lòng chọn một cụm tuyến / tài xế đích khác với cụm hiện tại.', [], 422);
+            return;
+        }
+
+        $targetCluster = $this->cumTuyenRepo->getById($targetClusterId);
+        if ($targetCluster === null || (int) $targetCluster['buu_cuc_id'] !== (int) $buuCuc['id']) {
+            $this->sendJson(false, 'Cụm tuyến đích không tồn tại hoặc không thuộc Bưu cục hiện tại.', [], 404);
+            return;
+        }
+
+        $maxCapacity = (int) ($buuCuc['suc_chua_moi_cum'] ?? 20);
+        if ((int) $targetCluster['so_don_hang'] >= $maxCapacity) {
+            $this->sendJson(
+                false,
+                sprintf(
+                    'Cụm tuyến của %s đã đầy định mức (%d/%d đơn). Vui lòng chọn tài xế khác.',
+                    (string) ($targetCluster['ten_tai_xe'] ?? ''),
+                    (int) $targetCluster['so_don_hang'],
+                    $maxCapacity
+                ),
+                [],
+                422
+            );
+            return;
+        }
+
+        try {
+            $this->db->beginTransaction();
+
+            $targetDriverId = (int) $targetCluster['tai_xe_id'];
+            $newSeq = ((int) $targetCluster['so_don_hang']) + 1;
+
+            $moved = $this->donHangRepo->moveOrderToCluster($orderId, $targetClusterId, $targetDriverId, $newSeq);
+            if (!$moved) {
+                $this->db->rollBack();
+                $this->sendJson(false, 'Không thể chuyển cụm cho đơn hàng này.', [], 409);
+                return;
+            }
+
+            $depot = [
+                'vi_do' => (float) $buuCuc['vi_do'],
+                'kinh_do' => (float) $buuCuc['kinh_do'],
+            ];
+
+            // Tính lại lộ trình & số km tối ưu cho cả cụm nguồn và cụm đích qua DieuPhoiLoTrinhService
+            if ($sourceClusterId > 0) {
+                $this->recalculateClusterRoutePreservingCompleted($sourceClusterId, $depot);
+            }
+            $this->recalculateClusterRoutePreservingCompleted($targetClusterId, $depot);
+
+            $this->db->commit();
+
+            $updatedClusters = $this->cumTuyenRepo->getClusters(null, (int) $buuCuc['id']);
+            $remainingErrors = $this->donHangRepo->getErrorOrders((int) $buuCuc['id']);
+            $allOrders = $this->donHangRepo->getOrdersByBuuCuc((int) $buuCuc['id']);
+            $mapClusters = $this->buildClusterMapPayload($updatedClusters, $buuCuc);
+
+            $this->sendJson(
+                true,
+                sprintf(
+                    'Đã chuyển đơn %s sang tuyến %s (%s) và tối ưu lại thứ tự giao 2-Opt cho cả 2 tuyến.',
+                    (string) $order['ma_van_don'],
+                    (string) $targetCluster['ma_cum_tuyen'],
+                    (string) ($targetCluster['ten_tai_xe'] ?? '')
+                ),
+                [
+                    'don_hang_id' => $orderId,
+                    'cum_nguon_id' => $sourceClusterId,
+                    'cum_dich_id' => $targetClusterId,
+                    'danh_sach_cum' => $mapClusters,
+                    'danh_sach_don_loi' => $remainingErrors,
+                    'tat_ca_don_hang' => $allOrders,
+                ]
+            );
+        } catch (Throwable $e) {
+            if ($this->db->inTransaction()) {
+                $this->db->rollBack();
+            }
+            $this->sendJson(false, 'Lỗi khi chuyển cụm cho đơn hàng: ' . $e->getMessage(), [], 500);
+        }
+    }
+
+    /**
+     * Tái tính toán lộ trình 2-Opt và số km cho một cụm tuyến nhưng bảo toàn thứ tự các đơn đã giao (`giao_thanh_cong` / `giao_that_bai`)
+     *
+     * @param int $clusterId
+     * @param array $depot
+     * @return array
+     */
+    private function recalculateClusterRoutePreservingCompleted(int $clusterId, array $depot): array
+    {
+        $allClusterOrders = $this->donHangRepo->getOrdersByCluster($clusterId);
+        if (empty($allClusterOrders)) {
+            $this->cumTuyenRepo->updateMetrics($clusterId, [
+                'so_don_hang' => 0,
+                'km_baseline' => 0.0,
+                'km_nn' => 0.0,
+                'km_toi_uu' => 0.0,
+                'ty_le_tiet_kiem_phan_tram' => 0.0,
+                'thoi_gian_chay_ms' => 0.0,
+                'trang_thai' => 'hoan_tat',
+            ]);
+            return [
+                'so_don_hang' => 0,
+                'km_baseline' => 0.0,
+                'km_nn' => 0.0,
+                'km_toi_uu' => 0.0,
+                'ty_le_tiet_kiem_phan_tram' => 0.0,
+            ];
+        }
+
+        $completedOrders = [];
+        $pendingOrders = [];
+        foreach ($allClusterOrders as $ord) {
+            if (($ord['trang_thai'] ?? '') === 'da_phan_cong') {
+                $pendingOrders[] = $ord;
+            } else {
+                $completedOrders[] = $ord;
+            }
+        }
+
+        $newCentroid = $this->calculateCentroid($allClusterOrders, $depot);
+
+        // Điểm bắt đầu cho phần lộ trình còn lại: nếu đã có đơn hoàn tất thì nối tiếp từ đơn hoàn tất cuối cùng, ngược lại từ P0
+        $startForPending = $depot;
+        if (!empty($completedOrders)) {
+            $lastDone = $completedOrders[count($completedOrders) - 1];
+            if (isset($lastDone['vi_do'], $lastDone['kinh_do'])) {
+                $startForPending = [
+                    'vi_do' => (float) $lastDone['vi_do'],
+                    'kinh_do' => (float) $lastDone['kinh_do'],
+                ];
+            }
+        }
+
+        $orderedPending = [];
+        if (!empty($pendingOrders)) {
+            $pendingPlan = $this->runRouteOptimization($startForPending, $pendingOrders);
+            $orderedPending = $pendingPlan['thu_tu'] ?? $pendingOrders;
+        }
+
+        $finalSequenceOrders = array_merge($completedOrders, $orderedPending);
+        foreach (array_values($finalSequenceOrders) as $seqIdx => $pt) {
+            $this->donHangRepo->updateSequence((int) $pt['id'], $clusterId, $seqIdx + 1);
+        }
+
+        // Tính tổng quãng đường toàn cụm từ P0 để đối chiếu Baseline vs NN vs 2-Opt nhất quán
+        $fullPlan = $this->runRouteOptimization($depot, $allClusterOrders);
+        $roadFactor = defined('HE_SO_DUONG_BO') ? (float) HE_SO_DUONG_BO : 1.3;
+        $kmBaseline = (float) ($fullPlan['km_baseline'] ?? 0.0);
+        $kmNn = (float) ($fullPlan['km_nn'] ?? 0.0);
+        $kmToiUu = empty($completedOrders)
+            ? (float) ($fullPlan['km_toi_uu'] ?? 0.0)
+            : round($this->calculateOpenPathKm($depot, $finalSequenceOrders, $roadFactor), 2);
+        if ($kmBaseline > 0.0 && $kmToiUu > $kmBaseline) {
+            $kmToiUu = (float) ($fullPlan['km_toi_uu'] ?? $kmToiUu);
+        }
+
+        $tyLeTietKiem = $kmBaseline > 0.0
+            ? round((($kmBaseline - $kmToiUu) / $kmBaseline) * 100, 2)
+            : 0.0;
+        $thoiGianMs = (float) ($fullPlan['thoi_gian_chay_ms'] ?? 0.15);
+        $trangThaiCum = empty($orderedPending) ? 'hoan_tat' : 'dang_giao';
+
+        $metrics = [
+            'so_don_hang' => count($finalSequenceOrders),
+            'vi_do_tam_cum' => (float) $newCentroid['vi_do'],
+            'kinh_do_tam_cum' => (float) $newCentroid['kinh_do'],
+            'km_baseline' => $kmBaseline,
+            'km_nn' => $kmNn,
+            'km_toi_uu' => $kmToiUu,
+            'ty_le_tiet_kiem_phan_tram' => $tyLeTietKiem,
+            'thoi_gian_chay_ms' => $thoiGianMs,
+            'trang_thai' => $trangThaiCum,
+        ];
+
+        $this->cumTuyenRepo->updateMetrics($clusterId, $metrics);
+
+        return $metrics;
     }
 
     /**
@@ -677,7 +920,7 @@ class DieuPhoiController
 
     /**
      * Chạy thuật toán Balanced K-Means: ưu tiên gọi BalancedKMeansService::cluster() của Thành viên 1,
-     * kèm cài đặt dự phòng chuẩn tất định theo Mục 3.1 nếu class đó chưa được merge.
+     * kèm cài đặt dự phòng chuẩn tất định theo Mục 3.1.
      *
      * @param array $orders
      * @param array $drivers
@@ -696,7 +939,6 @@ class DieuPhoiController
             }
         }
 
-        // Fallback tất định theo đúng Mục 3.1
         $n = count($orders);
         $m = count($drivers);
         if ($n === 0 || $m === 0) {
@@ -706,7 +948,6 @@ class DieuPhoiController
         $k = min($m, $n);
         $targetCapacity = min($maxPerCluster, (int) ceil($n / $k));
 
-        // Bước 2: Sắp xếp đơn theo góc phương vị atan2 quanh P0 tăng dần (trùng góc thì id ASC)
         $sortedOrders = $orders;
         usort($sortedOrders, static function (array $a, array $b) use ($depot): int {
             $angleA = atan2(((float) $a['vi_do']) - $depot['vi_do'], ((float) $a['kinh_do']) - $depot['kinh_do']);
@@ -717,7 +958,6 @@ class DieuPhoiController
             return ((int) $a['id']) <=> ((int) $b['id']);
         });
 
-        // Chia thành K lát cắt đều nhau để tính tâm cụm khởi tạo
         $centroids = [];
         $sliceSize = $n / $k;
         for ($c = 0; $c < $k; $c++) {
@@ -727,7 +967,6 @@ class DieuPhoiController
             $centroids[$c] = $this->calculateCentroid($slice, $depot);
         }
 
-        // Bước 3: Lặp gán điểm có cân bằng tải (tối đa 20 vòng)
         $assignments = [];
         $clusterBuckets = array_fill(0, $k, []);
 
@@ -771,7 +1010,10 @@ class DieuPhoiController
                 $order = $item['order'];
                 $assignedCluster = $item['ordered_clusters'][0];
                 foreach ($item['ordered_clusters'] as $cIdx) {
-                    if (count($clusterBuckets[$cIdx]) < $targetCapacity) {
+                    $driverCap = isset($drivers[$cIdx]['suc_chua_con_lai'])
+                        ? min($targetCapacity, (int) $drivers[$cIdx]['suc_chua_con_lai'])
+                        : $targetCapacity;
+                    if (count($clusterBuckets[$cIdx]) < $driverCap) {
                         $assignedCluster = $cIdx;
                         break;
                     }
@@ -792,7 +1034,6 @@ class DieuPhoiController
             $assignments = $newAssignments;
         }
 
-        // Loại bỏ cụm rỗng và ghép cụm cho tài xế theo phường ưu tiên (Bước 4)
         $nonEmptyClusters = [];
         for ($c = 0; $c < $k; $c++) {
             if (!empty($clusterBuckets[$c])) {
@@ -878,7 +1119,6 @@ class DieuPhoiController
         $t0 = microtime(true);
         $roadFactor = defined('HE_SO_DUONG_BO') ? (float) HE_SO_DUONG_BO : 1.3;
 
-        // 1. Baseline: sắp theo thu_tu_file ASC, id ASC
         $baselinePoints = $points;
         usort($baselinePoints, static function (array $a, array $b): int {
             $fa = (int) ($a['thu_tu_file'] ?? 0);
@@ -890,7 +1130,6 @@ class DieuPhoiController
         });
         $kmBaseline = $this->calculateOpenPathKm($start, $baselinePoints, $roadFactor);
 
-        // 2. Nearest Neighbor (NN)
         $remaining = $points;
         $nnRoute = [];
         $currLat = (float) $start['vi_do'];
@@ -920,7 +1159,6 @@ class DieuPhoiController
 
         $kmNn = $this->calculateOpenPathKm($start, $nnRoute, $roadFactor);
 
-        // 3. 2-Opt đường hở (cố định điểm đầu S = T[0], tự do điểm cuối T[n])
         $n = count($nnRoute);
         $route = array_merge([$start], $nnRoute);
 
@@ -1070,7 +1308,6 @@ class DieuPhoiController
         foreach ($clusters as $cluster) {
             $orders = $this->donHangRepo->getOrdersByCluster((int) $cluster['id']);
 
-            // Thứ tự 2-Opt (sắp theo thu_tu_giao ASC)
             $orders2Opt = $orders;
             usort($orders2Opt, static function (array $a, array $b): int {
                 $sa = (int) ($a['thu_tu_giao'] ?? 999999);
@@ -1081,7 +1318,6 @@ class DieuPhoiController
                 return ((int) $a['id']) <=> ((int) $b['id']);
             });
 
-            // Thứ tự Baseline (sắp theo thu_tu_file ASC, id ASC)
             $ordersBaseline = $orders;
             usort($ordersBaseline, static function (array $a, array $b): int {
                 $fa = (int) ($a['thu_tu_file'] ?? 0);
@@ -1103,7 +1339,7 @@ class DieuPhoiController
     }
 
     /**
-     * Tạo hoặc lấy CSRF token hiện tại trong session (đồng bộ khóa _csrf_token của hệ thống)
+     * Tạo hoặc lấy CSRF token hiện tại trong session
      *
      * @return string
      */
