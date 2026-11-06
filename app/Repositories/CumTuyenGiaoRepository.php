@@ -106,7 +106,7 @@ class CumTuyenGiaoRepository
     }
 
     /**
-     * Lấy danh sách các cụm tuyến theo lô hoặc theo bưu cục
+     * Lấy danh sách các cụm tuyến theo lô hoặc theo bưu cục kèm tiến độ đơn và tổng tiền COD
      *
      * @param string|null $batchCode
      * @param int|null $buuCucId
@@ -128,7 +128,10 @@ class CumTuyenGiaoRepository
                     p.ten_phuong AS ten_phuong_uu_tien,
                     COALESCE(stats.so_don_da_phan_cong, 0) AS so_don_dang_cho,
                     COALESCE(stats.so_don_thanh_cong, 0) AS so_don_da_giao,
-                    COALESCE(stats.so_don_that_bai, 0) AS so_don_that_bai
+                    COALESCE(stats.so_don_that_bai, 0) AS so_don_that_bai,
+                    COALESCE(stats.tong_cod_cum, 0) AS tong_cod_cum,
+                    COALESCE(stats.tong_cod_da_thu, 0) AS tong_cod_da_thu,
+                    COALESCE(stats.tong_cod_dang_giao, 0) AS tong_cod_dang_giao
                 FROM cum_tuyen_giao ctg
                 INNER JOIN nguoi_dung nd ON ctg.tai_xe_id = nd.id
                 LEFT JOIN phuong p ON nd.phuong_uu_tien_id = p.id
@@ -137,7 +140,10 @@ class CumTuyenGiaoRepository
                         cum_tuyen_id,
                         SUM(CASE WHEN trang_thai = \'da_phan_cong\' THEN 1 ELSE 0 END) AS so_don_da_phan_cong,
                         SUM(CASE WHEN trang_thai = \'giao_thanh_cong\' THEN 1 ELSE 0 END) AS so_don_thanh_cong,
-                        SUM(CASE WHEN trang_thai = \'giao_that_bai\' THEN 1 ELSE 0 END) AS so_don_that_bai
+                        SUM(CASE WHEN trang_thai = \'giao_that_bai\' THEN 1 ELSE 0 END) AS so_don_that_bai,
+                        COALESCE(SUM(tien_thu_ho), 0) AS tong_cod_cum,
+                        COALESCE(SUM(CASE WHEN trang_thai = \'giao_thanh_cong\' THEN tien_thu_ho ELSE 0 END), 0) AS tong_cod_da_thu,
+                        COALESCE(SUM(CASE WHEN trang_thai = \'da_phan_cong\' THEN tien_thu_ho ELSE 0 END), 0) AS tong_cod_dang_giao
                     FROM don_hang
                     WHERE cum_tuyen_id IS NOT NULL
                     GROUP BY cum_tuyen_id
@@ -161,6 +167,30 @@ class CumTuyenGiaoRepository
         $rows = $stmt->fetchAll(PDO::FETCH_ASSOC);
 
         return array_map([$this, 'normalizeRow'], $rows);
+    }
+
+    /**
+     * Lấy cụm tuyến đang ở trạng thái `dang_giao` của một tài xế (dùng cho Dispatch Lock)
+     *
+     * @param int $driverId
+     * @param int|null $buuCucId
+     * @return array|null
+     */
+    public function getOpenClusterByDriver(int $driverId, ?int $buuCucId = null): ?array
+    {
+        $sql = 'SELECT * FROM cum_tuyen_giao WHERE tai_xe_id = :tai_xe_id AND trang_thai = \'dang_giao\'';
+        $params = ['tai_xe_id' => $driverId];
+        if ($buuCucId !== null) {
+            $sql .= ' AND buu_cuc_id = :buu_cuc_id';
+            $params['buu_cuc_id'] = $buuCucId;
+        }
+        $sql .= ' ORDER BY id DESC LIMIT 1';
+
+        $stmt = $this->db->prepare($sql);
+        $stmt->execute($params);
+        $row = $stmt->fetch(PDO::FETCH_ASSOC);
+
+        return $row !== false ? $this->normalizeRow($row) : null;
     }
 
     /**
@@ -211,6 +241,7 @@ class CumTuyenGiaoRepository
 
         $sqlAllOrders = 'SELECT
                              dh.*,
+                             dh.so_dien_thoai_khach AS sdt_nguoi_nhan,
                              p.ten_phuong,
                              p.ma_hanh_chinh AS ma_hanh_chinh_phuong
                          FROM don_hang dh
@@ -233,6 +264,9 @@ class CumTuyenGiaoRepository
             $o['cum_tuyen_id'] = $o['cum_tuyen_id'] !== null ? (int) $o['cum_tuyen_id'] : null;
             $o['tai_xe_id'] = $o['tai_xe_id'] !== null ? (int) $o['tai_xe_id'] : null;
             $o['thu_tu_giao'] = $o['thu_tu_giao'] !== null ? (int) $o['thu_tu_giao'] : null;
+            if (!isset($o['sdt_nguoi_nhan']) && array_key_exists('so_dien_thoai_khach', $o)) {
+                $o['sdt_nguoi_nhan'] = $o['so_dien_thoai_khach'];
+            }
             return $o;
         }, $orderRows);
 
@@ -274,6 +308,9 @@ class CumTuyenGiaoRepository
         $thoiGianChayMs = isset($metrics['thoi_gian_chay_ms'])
             ? (float) $metrics['thoi_gian_chay_ms']
             : (float) $existing['thoi_gian_chay_ms'];
+        $trangThai = isset($metrics['trang_thai'])
+            ? (string) $metrics['trang_thai']
+            : (string) $existing['trang_thai'];
 
         $sql = 'UPDATE cum_tuyen_giao
                 SET so_don_hang = :so_don_hang,
@@ -283,7 +320,8 @@ class CumTuyenGiaoRepository
                     km_nn = :km_nn,
                     km_toi_uu = :km_toi_uu,
                     ty_le_tiet_kiem_phan_tram = :ty_le_tiet_kiem_phan_tram,
-                    thoi_gian_chay_ms = :thoi_gian_chay_ms
+                    thoi_gian_chay_ms = :thoi_gian_chay_ms,
+                    trang_thai = :trang_thai
                 WHERE id = :id';
 
         $stmt = $this->db->prepare($sql);
@@ -296,8 +334,24 @@ class CumTuyenGiaoRepository
             'km_toi_uu' => round($kmToiUu, 2),
             'ty_le_tiet_kiem_phan_tram' => round($tyLeTietKiem, 2),
             'thoi_gian_chay_ms' => round($thoiGianChayMs, 3),
+            'trang_thai' => $trangThai,
             'id' => $clusterId,
         ]);
+    }
+
+    /**
+     * Xóa tất cả các bản ghi cụm tuyến của Bưu cục (Chỉ gọi sau khi đã gỡ khóa ngoại cum_tuyen_id ở bảng don_hang)
+     *
+     * @param int $buuCucId
+     * @return int
+     */
+    public function deleteByBuuCuc(int $buuCucId): int
+    {
+        $sql = 'DELETE FROM cum_tuyen_giao WHERE buu_cuc_id = :buu_cuc_id';
+        $stmt = $this->db->prepare($sql);
+        $stmt->execute(['buu_cuc_id' => $buuCucId]);
+
+        return $stmt->rowCount();
     }
 
     /**
@@ -349,6 +403,42 @@ class CumTuyenGiaoRepository
     }
 
     /**
+     * Thống kê trạng thái đơn hàng theo bưu cục (Forward sang DonHangRepository)
+     *
+     * @param int|null $buuCucId
+     * @return array
+     */
+    public function thongKeTrangThaiDonHang(?int $buuCucId = null): array
+    {
+        $donHangRepo = new DonHangRepository($this->db);
+        return $donHangRepo->thongKeTrangThaiDonHang($buuCucId);
+    }
+
+    /**
+     * Thống kê hiệu suất và đối soát COD theo tài xế (Forward sang DonHangRepository)
+     *
+     * @param int|null $buuCucId
+     * @return array
+     */
+    public function thongKeHieuSuatVaCodTheoTaiXe(?int $buuCucId = null): array
+    {
+        $donHangRepo = new DonHangRepository($this->db);
+        return $donHangRepo->thongKeHieuSuatVaCodTheoTaiXe($buuCucId);
+    }
+
+    /**
+     * Thống kê đơn hàng theo Phường/Xã (Forward sang DonHangRepository)
+     *
+     * @param int|null $buuCucId
+     * @return array
+     */
+    public function thongKeDonHangTheoPhuong(?int $buuCucId = null): array
+    {
+        $donHangRepo = new DonHangRepository($this->db);
+        return $donHangRepo->thongKeDonHangTheoPhuong($buuCucId);
+    }
+
+    /**
      * Chuẩn hóa kiểu dữ liệu số của bản ghi Cụm tuyến giao
      *
      * @param array $row
@@ -384,6 +474,15 @@ class CumTuyenGiaoRepository
         }
         if (isset($row['so_don_that_bai'])) {
             $row['so_don_that_bai'] = (int) $row['so_don_that_bai'];
+        }
+        if (isset($row['tong_cod_cum'])) {
+            $row['tong_cod_cum'] = (float) $row['tong_cod_cum'];
+        }
+        if (isset($row['tong_cod_da_thu'])) {
+            $row['tong_cod_da_thu'] = (float) $row['tong_cod_da_thu'];
+        }
+        if (isset($row['tong_cod_dang_giao'])) {
+            $row['tong_cod_dang_giao'] = (float) $row['tong_cod_dang_giao'];
         }
 
         return $row;

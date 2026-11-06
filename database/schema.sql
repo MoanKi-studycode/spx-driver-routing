@@ -120,8 +120,8 @@ CREATE TABLE don_hang (
     thu_tu_giao INT DEFAULT NULL COMMENT 'Thứ tự điểm dừng 1..n sau khi chạy NN + 2-Opt',
     trang_thai ENUM('chua_phan_cong', 'da_phan_cong', 'giao_thanh_cong', 'giao_that_bai')
         NOT NULL DEFAULT 'chua_phan_cong',
+    ly_do_that_bai VARCHAR(255) NULL DEFAULT NULL COMMENT 'Lý do giao thất bại do tài xế xác nhận',
     ly_do_chua_phan_cong ENUM('loi_toa_do', 'ngoai_vung_phuc_vu', 'qua_tai_tai_xe') DEFAULT NULL,
-    ly_do_that_bai VARCHAR(255) DEFAULT NULL,
     thoi_gian_phan_cong DATETIME DEFAULT NULL,
     thoi_gian_hoan_tat DATETIME DEFAULT NULL,
     ngay_tao DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,

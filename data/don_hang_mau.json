@@ -17,7 +17,7 @@
       "ma_hanh_chinh_phuong": "22339",
       "vi_do": 12.2725,
       "kinh_do": 109.2008,
-      "tien_thu_ho": 150000
+      "tien_thu_ho": 450000
     },
     {
       "ma_van_don": "SPXVN261010002",
@@ -31,7 +31,7 @@
       "ma_hanh_chinh_phuong": "22339",
       "vi_do": 12.2912,
       "kinh_do": 109.2045,
-      "tien_thu_ho": 220000
+      "tien_thu_ho": 0
     },
     {
       "ma_van_don": "SPXVN261010003",
@@ -45,7 +45,7 @@
       "ma_hanh_chinh_phuong": "22339",
       "vi_do": 12.2681,
       "kinh_do": 109.2002,
-      "tien_thu_ho": 95000
+      "tien_thu_ho": 1250000
     },
     {
       "ma_van_don": "SPXVN261010004",
@@ -227,7 +227,7 @@
       "ma_hanh_chinh_phuong": "22366",
       "vi_do": 12.2495,
       "kinh_do": 109.1765,
-      "tien_thu_ho": 175000
+      "tien_thu_ho": 1500000
     },
     {
       "ma_van_don": "SPXVN261010017",
@@ -241,7 +241,7 @@
       "ma_hanh_chinh_phuong": "22366",
       "vi_do": 12.2535,
       "kinh_do": 109.1585,
-      "tien_thu_ho": 290000
+      "tien_thu_ho": 0
     },
     {
       "ma_van_don": "SPXVN261010018",
@@ -255,7 +255,7 @@
       "ma_hanh_chinh_phuong": "22366",
       "vi_do": 12.2585,
       "kinh_do": 109.1735,
-      "tien_thu_ho": 130000
+      "tien_thu_ho": 890000
     },
     {
       "ma_van_don": "SPXVN261010019",
@@ -437,7 +437,7 @@
       "ma_hanh_chinh_phuong": "22327",
       "vi_do": 12.2415,
       "kinh_do": 109.1965,
-      "tien_thu_ho": 320000
+      "tien_thu_ho": 1350000
     },
     {
       "ma_van_don": "SPXVN261010032",
@@ -451,7 +451,7 @@
       "ma_hanh_chinh_phuong": "22327",
       "vi_do": 12.2265,
       "kinh_do": 109.1815,
-      "tien_thu_ho": 185000
+      "tien_thu_ho": 0
     },
     {
       "ma_van_don": "SPXVN261010033",
@@ -465,7 +465,7 @@
       "ma_hanh_chinh_phuong": "22327",
       "vi_do": 12.2382,
       "kinh_do": 109.1948,
-      "tien_thu_ho": 250000
+      "tien_thu_ho": 780000
     },
     {
       "ma_van_don": "SPXVN261010034",
