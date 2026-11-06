@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace App\Controllers;
 
 use App\Core\Database;
+use App\Repositories\DonHangRepository;
 use App\Repositories\NguoiDungRepository;
 use PDOException;
 
@@ -23,16 +24,50 @@ class AuthController
         $this->ensureSession();
 
         $role = $_SESSION['vai_tro'] ?? null;
-        if ($role === 'tai_xe' || $role === 'dieu_phoi') {
+        $trackingParameter = $_GET['ma_van_don'] ?? null;
+        $invalidTrackingCode = $trackingParameter !== null && !is_string($trackingParameter);
+        $trackingCode = is_string($trackingParameter) ? trim($trackingParameter) : '';
+        if (($role === 'tai_xe' || $role === 'dieu_phoi') && $trackingCode === '' && !$invalidTrackingCode) {
             $this->redirect($role === 'tai_xe' ? '/tai-xe' : '/dieu-phoi');
         }
 
         $title = 'Đăng nhập';
         $csrfToken = $this->csrfToken();
         $loginError = null;
+        $trackingResult = null;
+        $trackingError = null;
         $statusCode = 200;
 
-        $this->renderLogin($title, $csrfToken, $loginError, $statusCode);
+        if ($invalidTrackingCode) {
+            $trackingError = 'Mã vận đơn không hợp lệ.';
+            $statusCode = 422;
+        } elseif ($trackingCode !== '') {
+            if (strlen($trackingCode) > 40) {
+                $trackingError = 'Mã vận đơn không hợp lệ.';
+                $statusCode = 422;
+            } else {
+                try {
+                    $repository = new DonHangRepository(Database::getConnection());
+                    if (!method_exists($repository, 'findPublicTrackingByCode')) {
+                        $trackingError = 'Chức năng tra cứu đang chờ Repository tra cứu vận đơn được tích hợp.';
+                        $statusCode = 503;
+                    } else {
+                        $trackingResult = $repository->findPublicTrackingByCode($trackingCode);
+                        if (!is_array($trackingResult) || $trackingResult === []) {
+                            $trackingResult = null;
+                            $trackingError = 'Không tìm thấy mã vận đơn này.';
+                            $statusCode = 404;
+                        }
+                    }
+                } catch (PDOException $exception) {
+                    error_log('Không thể tra cứu vận đơn: ' . $exception->getMessage());
+                    $trackingError = 'Dịch vụ tra cứu hiện không khả dụng. Vui lòng thử lại sau.';
+                    $statusCode = 503;
+                }
+            }
+        }
+
+        $this->renderLogin($title, $csrfToken, $loginError, $statusCode, $trackingCode, $trackingResult, $trackingError);
     }
 
     /**
@@ -99,6 +134,7 @@ class AuthController
         $_SESSION['vai_tro'] = $role;
         $_SESSION['buu_cuc_id'] = $branchId;
         $_SESSION['ho_ten'] = (string) ($user['ho_ten'] ?? '');
+        $_SESSION['ten_buu_cuc'] = (string) ($user['ten_buu_cuc'] ?? '');
         $_SESSION[self::CSRF_SESSION_KEY] = bin2hex(random_bytes(32));
 
         $this->redirect($role === 'tai_xe' ? '/tai-xe' : '/dieu-phoi');
@@ -132,7 +168,15 @@ class AuthController
         $this->redirect('/login');
     }
 
-    private function renderLogin(string $title, string $csrfToken, ?string $loginError, int $statusCode): void
+    private function renderLogin(
+        string $title,
+        string $csrfToken,
+        ?string $loginError,
+        int $statusCode,
+        string $trackingCode = '',
+        ?array $trackingResult = null,
+        ?string $trackingError = null
+    ): void
     {
         http_response_code($statusCode);
         require dirname(__DIR__) . '/Views/layouts/header.php';

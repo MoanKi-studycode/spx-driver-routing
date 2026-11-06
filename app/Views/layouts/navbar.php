@@ -25,6 +25,12 @@ $role = $_SESSION['vai_tro'] ?? null;
                     <span class="navbar-text"><?php echo $escape($_SESSION['ho_ten']); ?></span>
                 <?php endif; ?>
                 <?php if ($role === 'tai_xe' || $role === 'dieu_phoi'): ?>
+                    <span class="badge text-bg-light"><?php echo $role === 'tai_xe' ? 'Tài xế' : 'Điều phối'; ?></span>
+                    <?php if (is_string($_SESSION['ten_buu_cuc'] ?? null) && $_SESSION['ten_buu_cuc'] !== ''): ?>
+                        <span class="navbar-text small"><?php echo $escape($_SESSION['ten_buu_cuc']); ?></span>
+                    <?php endif; ?>
+                <?php endif; ?>
+                <?php if ($role === 'tai_xe' || $role === 'dieu_phoi'): ?>
                     <a class="btn btn-sm btn-outline-light" href="<?php echo $escape($baseUrl); ?>/logout">Đăng xuất</a>
                 <?php else: ?>
                     <a class="nav-link" href="<?php echo $escape($baseUrl); ?>/login">Đăng nhập</a>

@@ -9,7 +9,9 @@
 
     const apiBase = app.dataset.baseUrl || '';
     const csrfToken = app.dataset.csrfToken || '';
-    const clusterColor = app.dataset.clusterColor || '#2563eb';
+    const clusterColor = /^#[\da-f]{6}$/i.test(app.dataset.clusterColor || '')
+        ? app.dataset.clusterColor
+        : '#EE4D2D';
     const mapStatus = document.querySelector('#map-status');
     const nextOrderElement = document.querySelector('#next-order');
     const nextOrderSeqBadge = document.querySelector('#next-order-seq-badge');
@@ -18,7 +20,16 @@
     const failButton = document.querySelector('#fail-next');
     const orderList = document.querySelector('#order-list');
     const gpsButton = document.querySelector('#use-gps');
+    const gpsToggle = document.querySelector('#toggle-gps');
     const mockButton = document.querySelector('#choose-location');
+    const mapToggleButton = document.querySelector('#toggle-map');
+    const mapContainer = document.querySelector('.driver-map-container');
+    const failureDialog = document.querySelector('#failure-reason-dialog');
+    const failureForm = document.querySelector('#failure-reason-form');
+    const failureChoice = document.querySelector('#failure-reason-choice');
+    const failureNote = document.querySelector('#failure-reason-note');
+    const failureNoteLabel = document.querySelector('#failure-reason-note-label');
+    const cancelFailureButton = document.querySelector('#cancel-failure-reason');
 
     let allOrders = parseJson(app.dataset.allOrders, []);
     let orders = parseJson(app.dataset.orders, []);
@@ -33,6 +44,11 @@
     let routeLayer = null;
     let driverMarker = null;
     let orderMarkers = [];
+    let gpsWatchId = null;
+    let lastGpsRerouteAt = 0;
+    let gpsReroutePending = false;
+    let isUpdatingResult = false;
+    let isFailureDialogOpen = false;
 
     if (!Array.isArray(allOrders) || allOrders.length === 0) {
         allOrders = Array.isArray(orders) ? [...orders] : [];
@@ -55,7 +71,7 @@
     // Marker Bưu cục xuất phát (P0) nổi bật
     const depotIcon = L.divIcon({
         className: 'spx-driver-depot-icon',
-        html: '<div style="background:#ee4d2d;color:#fff;width:36px;height:36px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-weight:bold;font-size:13px;border:3px solid #fff;box-shadow:0 2px 8px rgba(0,0,0,0.35);">P0</div>',
+        html: '<div style="background:#EE4D2D;color:#fff;width:36px;height:36px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-weight:bold;font-size:13px;border:3px solid #fff;box-shadow:0 2px 8px rgba(0,0,0,0.35);">P0</div>',
         iconSize: [36, 36],
         iconAnchor: [18, 18]
     });
@@ -78,6 +94,34 @@
     });
 
     gpsButton?.addEventListener('click', getBrowserLocation);
+    gpsToggle?.addEventListener('change', () => {
+        if (gpsToggle.checked) {
+            startGpsWatch();
+        } else {
+            stopGpsWatch();
+        }
+    });
+    mapToggleButton?.addEventListener('click', () => {
+        const collapsed = mapContainer?.classList.toggle('is-collapsed') || false;
+        mapToggleButton.setAttribute('aria-expanded', String(!collapsed));
+        mapToggleButton.textContent = collapsed ? 'Mở bản đồ' : 'Thu gọn bản đồ';
+        if (!collapsed) {
+            window.setTimeout(() => map.invalidateSize(), 0);
+        }
+    });
+    failureChoice?.addEventListener('change', () => {
+        const needsNote = failureChoice.value === 'other';
+        failureNote?.classList.toggle('d-none', !needsNote);
+        failureNoteLabel?.classList.toggle('d-none', !needsNote);
+        if (failureNote) {
+            failureNote.required = needsNote;
+            if (!needsNote) {
+                failureNote.value = '';
+            }
+        }
+    });
+    failureNote?.addEventListener('input', () => failureNote.setCustomValidity(''));
+    cancelFailureButton?.addEventListener('click', () => failureDialog?.close());
     mockButton?.addEventListener('click', () => {
         mockMode = !mockMode;
         mockButton.classList.toggle('active', mockMode);
@@ -110,7 +154,11 @@
     });
 
     orderList?.addEventListener('click', (evt) => {
-        const actionBtn = evt.target.closest('[data-order-action]');
+        const target = evt.target instanceof Element ? evt.target : null;
+        if (!target) {
+            return;
+        }
+        const actionBtn = target.closest('[data-order-action]');
         if (actionBtn) {
             const orderId = Number(actionBtn.getAttribute('data-order-id'));
             const action = actionBtn.getAttribute('data-order-action');
@@ -120,8 +168,8 @@
             return;
         }
 
-        const focusCard = evt.target.closest('[data-focus-order-id]');
-        if (focusCard && !evt.target.closest('a, button')) {
+        const focusCard = target.closest('[data-focus-order-id]');
+        if (focusCard && !target.closest('a, button')) {
             const focusId = Number(focusCard.getAttribute('data-focus-order-id'));
             const found = allOrders.find((o) => Number(o.id) === focusId);
             if (found && isMappableOrder(found)) {
@@ -133,6 +181,7 @@
     renderOrders();
     void drawRoute();
     window.setTimeout(() => map.invalidateSize(), 0);
+    window.addEventListener('pagehide', stopGpsWatch);
 
     function syncPendingOrdersFromAll() {
         orders = allOrders
@@ -189,7 +238,7 @@
         }
         const driverIcon = L.divIcon({
             className: 'spx-driver-gps-icon',
-            html: '<div style="background:#16a34a;color:#fff;width:34px;height:34px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-weight:bold;font-size:15px;border:3px solid #fff;box-shadow:0 2px 8px rgba(0,0,0,0.4);">🚚</div>',
+            html: '<div style="background:#10B981;color:#fff;width:34px;height:34px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-weight:bold;font-size:15px;border:3px solid #fff;box-shadow:0 2px 8px rgba(0,0,0,0.4);">🚚</div>',
             iconSize: [34, 34],
             iconAnchor: [17, 17]
         });
@@ -213,7 +262,7 @@
         orders.forEach((order, index) => {
             const seqNumber = index + 1;
             const isNextStop = index === 0;
-            const bgColor = isNextStop ? '#ee4d2d' : clusterColor;
+            const bgColor = isNextStop ? '#EE4D2D' : clusterColor;
             const size = isNextStop ? 32 : 26;
             const anchor = size / 2;
 
@@ -250,7 +299,7 @@
             }
             const isSuccess = st === 'giao_thanh_cong';
             const badgeSymbol = isSuccess ? '✓' : '✕';
-            const badgeColor = isSuccess ? '#16a34a' : '#64748b';
+            const badgeColor = isSuccess ? '#10B981' : '#EF4444';
             const statusText = isSuccess ? 'Đã giao thành công' : ('Giao thất bại: ' + (order.ly_do_that_bai || ''));
 
             const doneIcon = L.divIcon({
@@ -354,14 +403,18 @@
             '<h2 class="h5 fw-bold mb-1">' + escapeHtml(order.ma_van_don || 'Đơn hàng') + '</h2>' +
             '<p class="text-dark mb-1"><strong>Khách hàng:</strong> ' + escapeHtml(order.ten_khach_hang || '') + phoneHtml + '</p>' +
             '<p class="small text-secondary mb-1"><i class="bi bi-geo-alt me-1"></i>' + escapeHtml(order.dia_chi_giao_hang || '') + '</p>' +
-            '<p class="small fw-bold text-danger mb-0">Thu hộ COD: ' + formatCurrency(order.tien_thu_ho) + '</p>';
+            '<p class="small fw-bold text-danger mb-0">' +
+            (Number(order.tien_thu_ho || 0) > 0
+                ? 'Cần thu COD: ' + formatCurrency(order.tien_thu_ho)
+                : 'Đơn 0đ - Không thu tiền') +
+            '</p>';
 
         const destination = `${Number(order.vi_do)},${Number(order.kinh_do)}`;
         googleMapsLink.href = `https://www.google.com/maps/dir/?api=1&destination=${encodeURIComponent(destination)}`;
         googleMapsLink.classList.remove('disabled');
         googleMapsLink.setAttribute('aria-disabled', 'false');
-        deliverButton.disabled = false;
-        failButton.disabled = false;
+        deliverButton.disabled = isUpdatingResult;
+        failButton.disabled = isUpdatingResult;
     }
 
     function renderOrderList() {
@@ -426,8 +479,8 @@
 
             const actionsHtml = isPending
                 ? '<div class="d-flex flex-wrap gap-1 mt-2">' +
-                  '<button type="button" class="btn btn-sm btn-success py-0 px-2" data-order-action="giao_thanh_cong" data-order-id="' + Number(order.id) + '"><i class="bi bi-check2 me-1"></i>Đã giao</button>' +
-                  '<button type="button" class="btn btn-sm btn-outline-danger py-0 px-2" data-order-action="giao_that_bai" data-order-id="' + Number(order.id) + '"><i class="bi bi-x me-1"></i>Thất bại</button>' +
+                  '<button type="button" class="btn btn-sm btn-success px-2" data-order-action="giao_thanh_cong" data-order-id="' + Number(order.id) + '"' + (isUpdatingResult ? ' disabled' : '') + '><i class="bi bi-check2 me-1"></i>Đã giao</button>' +
+                  '<button type="button" class="btn btn-sm btn-outline-danger px-2" data-order-action="giao_that_bai" data-order-id="' + Number(order.id) + '"' + (isUpdatingResult ? ' disabled' : '') + '><i class="bi bi-x me-1"></i>Thất bại</button>' +
                   callHtml +
                   '</div>'
                 : '<div class="d-flex flex-wrap gap-1 mt-1">' + callHtml + '</div>';
@@ -441,11 +494,13 @@
                 '<div>' +
                 '<div class="d-flex align-items-center gap-2 mb-1">' +
                 (isPending
-                    ? '<span class="badge rounded-pill" style="background:' + (stopRank === 1 ? '#ee4d2d' : escapeHtml(clusterColor)) + ';">#' + escapeHtml(stopRank) + '</span>'
+                    ? '<span class="badge rounded-pill" style="background:' + (stopRank === 1 ? '#EE4D2D' : escapeHtml(clusterColor)) + ';">#' + escapeHtml(stopRank) + '</span>'
                     : '') +
                 '<h3 class="h6 fw-bold mb-0">' + escapeHtml(order.ma_van_don || 'Đơn hàng') + '</h3>' +
                 '</div>' +
-                '<div class="small fw-semibold text-dark">' + escapeHtml(order.ten_khach_hang || '') + ' &bull; <span class="text-danger">' + formatCurrency(order.tien_thu_ho) + '</span></div>' +
+                '<div class="small fw-semibold text-dark">' + escapeHtml(order.ten_khach_hang || '') + ' &bull; <span class="text-danger">' +
+                (Number(order.tien_thu_ho || 0) > 0 ? 'COD ' + formatCurrency(order.tien_thu_ho) : 'Đơn 0đ - Không thu tiền') +
+                '</span></div>' +
                 '<div class="small text-secondary">' + escapeHtml(order.dia_chi_giao_hang || '') + '</div>' +
                 failReasonHtml +
                 actionsHtml +
@@ -461,6 +516,66 @@
         if (!navigator.geolocation) {
             setStatus('Trình duyệt không hỗ trợ định vị GPS.');
             return;
+        }
+
+        function startGpsWatch() {
+            if (!navigator.geolocation) {
+                setStatus('Trình duyệt không hỗ trợ định vị GPS.');
+                gpsToggle.checked = false;
+                return;
+            }
+            if (gpsWatchId !== null) {
+                return;
+            }
+
+            setStatus('Đang bật cập nhật GPS liên tục.');
+            gpsWatchId = navigator.geolocation.watchPosition(
+                (position) => {
+                    if (!isCoordinate(position.coords.latitude, -90, 90)
+                        || !isCoordinate(position.coords.longitude, -180, 180)) {
+                        setStatus('GPS trả về tọa độ không hợp lệ.');
+                        return;
+                    }
+
+                    currentLocation = {
+                        vi_do: Number(position.coords.latitude),
+                        kinh_do: Number(position.coords.longitude)
+                    };
+                    renderDriverMarker();
+                    const now = Date.now();
+                    if (now - lastGpsRerouteAt < 15000 || gpsReroutePending) {
+                        return;
+                    }
+                    lastGpsRerouteAt = now;
+                    gpsReroutePending = true;
+                    void requestReroute().then(async (updated) => {
+                        await drawRoute();
+                        if (updated && gpsToggle.checked) {
+                            setStatus('GPS đang cập nhật vị trí và lộ trình tự động.');
+                        }
+                    }).finally(() => {
+                        gpsReroutePending = false;
+                    });
+                },
+                (error) => {
+                    setStatus(error.code === error.PERMISSION_DENIED
+                        ? 'Bạn chưa cấp quyền truy cập vị trí. Hãy cho phép GPS trong trình duyệt.'
+                        : 'Không thể cập nhật GPS liên tục. Vui lòng thử lại.');
+                    gpsToggle.checked = false;
+                    stopGpsWatch();
+                },
+                { enableHighAccuracy: true, timeout: 10000, maximumAge: 5000 }
+            );
+        }
+
+        function stopGpsWatch() {
+            if (gpsWatchId !== null && navigator.geolocation) {
+                navigator.geolocation.clearWatch(gpsWatchId);
+                gpsWatchId = null;
+            }
+            if (gpsToggle) {
+                gpsToggle.checked = false;
+            }
         }
 
         gpsButton.disabled = true;
@@ -517,7 +632,7 @@
             .map((point) => `${Number(point.kinh_do)},${Number(point.vi_do)}`)
             .join(';');
         const controller = new AbortController();
-        const timeoutId = window.setTimeout(() => controller.abort(), 5000);
+        const timeoutId = window.setTimeout(() => controller.abort(), 3000);
 
         try {
             const response = await fetch(
@@ -592,22 +707,80 @@
         }
     }
 
+    function requestFailureReason() {
+        if (!failureDialog || !failureForm || !failureChoice || !failureNote || typeof failureDialog.showModal !== 'function') {
+            setStatus('Trình duyệt không hỗ trợ hộp thoại ghi nhận lý do giao thất bại.');
+            return Promise.resolve(null);
+        }
+
+        failureForm.reset();
+        failureNote.setCustomValidity('');
+        failureChoice.dispatchEvent(new Event('change'));
+        return new Promise((resolve) => {
+            failureDialog.returnValue = '';
+            const handleSubmit = (event) => {
+                event.preventDefault();
+                let reason = failureChoice.value;
+                if (reason === 'other') {
+                    const note = failureNote.value.trim();
+                    reason = note === '' ? '' : 'Lý do khác: ' + note;
+                }
+                if (reason === '' || new TextEncoder().encode(reason).length > 255) {
+                    failureNote.setCustomValidity(reason === ''
+                        ? 'Vui lòng nhập ghi chú cho lý do khác.'
+                        : 'Lý do vượt quá giới hạn lưu trữ 255 byte.');
+                    failureNote.reportValidity();
+                    return;
+                }
+                failureDialog.close(reason);
+            };
+            failureDialog.addEventListener('close', () => {
+                const reason = failureDialog.returnValue || null;
+                failureForm.removeEventListener('submit', handleSubmit);
+                failureForm.reset();
+                failureNote.setCustomValidity('');
+                failureChoice.dispatchEvent(new Event('change'));
+                resolve(reason);
+            }, { once: true });
+            failureForm.addEventListener('submit', handleSubmit);
+            failureDialog.showModal();
+            failureChoice.focus();
+        });
+    }
+
     async function updateOrderResult(orderId, status) {
         if (!Number.isInteger(orderId) || orderId < 1) {
             setStatus('Đơn hàng không có mã hợp lệ để cập nhật.');
             return;
         }
+        if (isUpdatingResult || isFailureDialogOpen) {
+            return;
+        }
 
         let failureReason = '';
         if (status === 'giao_that_bai') {
-            failureReason = window.prompt('Nhập lý do giao thất bại (VD: Khách hẹn giao lại chiều, Không nghe máy):') || '';
-            if (!failureReason.trim()) {
+            isFailureDialogOpen = true;
+            try {
+                failureReason = await requestFailureReason() || '';
+            } finally {
+                isFailureDialogOpen = false;
+            }
+            if (failureReason === '') {
+                return;
+            }
+        } else {
+            const order = allOrders.find((item) => Number(item.id) === orderId);
+            const cod = Number(order?.tien_thu_ho || 0);
+            if (cod > 0 && !window.confirm('Xác nhận đã thu COD ' + formatCurrency(cod) + ' cho đơn này?')) {
                 return;
             }
         }
 
+        isUpdatingResult = true;
+        setOrderActionButtonsDisabled(true);
         deliverButton.disabled = true;
         failButton.disabled = true;
+        setStatus('Đang gửi kết quả giao hàng...');
         try {
             const response = await fetch(
                 `${apiBase}/api/tai-xe/don-hang/${orderId}/ket-qua`,
@@ -643,15 +816,30 @@
             });
 
             renderOrders();
+            const rerouted = currentLocation ? await requestReroute() : true;
             await drawRoute();
+            if (orders[0] && isMappableOrder(orders[0])) {
+                map.flyTo([Number(orders[0].vi_do), Number(orders[0].kinh_do)], 16, { duration: 0.8 });
+            }
             setStatus(status === 'giao_thanh_cong'
-                ? 'Đã xác nhận GIAO THÀNH CÔNG và đồng bộ về trung tâm điều phối.'
-                : 'Đã ghi nhận GIAO THẤT BẠI và đồng bộ về trung tâm điều phối.');
+                ? (rerouted
+                    ? 'Đã xác nhận GIAO THÀNH CÔNG và đồng bộ về trung tâm điều phối.'
+                    : 'Đã giao thành công, nhưng chưa thể đồng bộ thứ tự tuyến mới.')
+                : (rerouted
+                    ? 'Đã ghi nhận GIAO THẤT BẠI và đồng bộ về trung tâm điều phối.'
+                    : 'Đã ghi nhận giao thất bại, nhưng chưa thể đồng bộ thứ tự tuyến mới.'));
         } catch {
             setStatus('Không thể kết nối máy chủ để cập nhật kết quả giao hàng.');
         } finally {
-            deliverButton.disabled = orders.length === 0;
-            failButton.disabled = orders.length === 0;
+            isUpdatingResult = false;
+            renderOrders();
+            setOrderActionButtonsDisabled(false);
         }
+    }
+
+    function setOrderActionButtonsDisabled(disabled) {
+        orderList?.querySelectorAll('[data-order-action]').forEach((button) => {
+            button.disabled = disabled;
+        });
     }
 })();
