@@ -512,70 +512,74 @@
         });
     }
 
+    function startGpsWatch() {
+        if (!navigator.geolocation) {
+            setStatus('Trình duyệt không hỗ trợ định vị GPS.');
+            if (gpsToggle) {
+                gpsToggle.checked = false;
+            }
+            return;
+        }
+        if (gpsWatchId !== null) {
+            return;
+        }
+
+        setStatus('Đang bật cập nhật GPS liên tục.');
+        gpsWatchId = navigator.geolocation.watchPosition(
+            (position) => {
+                if (!isCoordinate(position.coords.latitude, -90, 90)
+                    || !isCoordinate(position.coords.longitude, -180, 180)) {
+                    setStatus('GPS trả về tọa độ không hợp lệ.');
+                    return;
+                }
+
+                currentLocation = {
+                    vi_do: Number(position.coords.latitude),
+                    kinh_do: Number(position.coords.longitude)
+                };
+                renderDriverMarker();
+                const now = Date.now();
+                if (now - lastGpsRerouteAt < 15000 || gpsReroutePending) {
+                    return;
+                }
+                lastGpsRerouteAt = now;
+                gpsReroutePending = true;
+                void requestReroute().then(async (updated) => {
+                    await drawRoute();
+                    if (updated && gpsToggle && gpsToggle.checked) {
+                        setStatus('GPS đang cập nhật vị trí và lộ trình tự động.');
+                    }
+                }).finally(() => {
+                    gpsReroutePending = false;
+                });
+            },
+            (error) => {
+                setStatus(error.code === error.PERMISSION_DENIED
+                    ? 'Bạn chưa cấp quyền truy cập vị trí. Hãy cho phép GPS trong trình duyệt.'
+                    : 'Không thể cập nhật GPS liên tục. Vui lòng thử lại.');
+                if (gpsToggle) {
+                    gpsToggle.checked = false;
+                }
+                stopGpsWatch();
+            },
+            { enableHighAccuracy: true, timeout: 10000, maximumAge: 5000 }
+        );
+    }
+
+    function stopGpsWatch() {
+        if (gpsWatchId !== null && navigator.geolocation) {
+            navigator.geolocation.clearWatch(gpsWatchId);
+            gpsWatchId = null;
+        }
+        if (gpsToggle) {
+            gpsToggle.checked = false;
+        }
+    }
+
     function getBrowserLocation() {
         if (!navigator.geolocation) {
             setStatus('Trình duyệt không hỗ trợ định vị GPS.');
             return;
-        }
-
-        function startGpsWatch() {
-            if (!navigator.geolocation) {
-                setStatus('Trình duyệt không hỗ trợ định vị GPS.');
-                gpsToggle.checked = false;
-                return;
-            }
-            if (gpsWatchId !== null) {
-                return;
-            }
-
-            setStatus('Đang bật cập nhật GPS liên tục.');
-            gpsWatchId = navigator.geolocation.watchPosition(
-                (position) => {
-                    if (!isCoordinate(position.coords.latitude, -90, 90)
-                        || !isCoordinate(position.coords.longitude, -180, 180)) {
-                        setStatus('GPS trả về tọa độ không hợp lệ.');
-                        return;
-                    }
-
-                    currentLocation = {
-                        vi_do: Number(position.coords.latitude),
-                        kinh_do: Number(position.coords.longitude)
-                    };
-                    renderDriverMarker();
-                    const now = Date.now();
-                    if (now - lastGpsRerouteAt < 15000 || gpsReroutePending) {
-                        return;
-                    }
-                    lastGpsRerouteAt = now;
-                    gpsReroutePending = true;
-                    void requestReroute().then(async (updated) => {
-                        await drawRoute();
-                        if (updated && gpsToggle.checked) {
-                            setStatus('GPS đang cập nhật vị trí và lộ trình tự động.');
-                        }
-                    }).finally(() => {
-                        gpsReroutePending = false;
-                    });
-                },
-                (error) => {
-                    setStatus(error.code === error.PERMISSION_DENIED
-                        ? 'Bạn chưa cấp quyền truy cập vị trí. Hãy cho phép GPS trong trình duyệt.'
-                        : 'Không thể cập nhật GPS liên tục. Vui lòng thử lại.');
-                    gpsToggle.checked = false;
-                    stopGpsWatch();
-                },
-                { enableHighAccuracy: true, timeout: 10000, maximumAge: 5000 }
-            );
-        }
-
-        function stopGpsWatch() {
-            if (gpsWatchId !== null && navigator.geolocation) {
-                navigator.geolocation.clearWatch(gpsWatchId);
-                gpsWatchId = null;
-            }
-            if (gpsToggle) {
-                gpsToggle.checked = false;
-            }
         }
 
         gpsButton.disabled = true;

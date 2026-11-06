@@ -97,10 +97,10 @@ body {
 
 .tracking-progress {
     display: grid;
-    grid-template-columns: repeat(3, minmax(0, 1fr));
+    grid-template-columns: repeat(4, minmax(0, 1fr));
     gap: 0.5rem;
     padding-left: 1.25rem;
-    font-size: 0.8rem;
+    font-size: 0.78rem;
 }
 
 .tracking-progress li.is-complete,
@@ -147,6 +147,10 @@ body {
 }
 
 @media (max-width: 575.98px) {
+    .tracking-progress {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+
     .driver-map {
         min-height: 320px;
         height: 48vh;

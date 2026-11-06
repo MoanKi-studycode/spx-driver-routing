@@ -7,20 +7,21 @@ HỆ THỐNG PHÂN CỤM VÀ TỐI ƯU TUYẾN GIAO HÀNG ĐA ĐIỂM CHO BƯU C
 
 1.1. Mục tiêu cốt lõi (Bám sát tên đề tài & Thực tế vận hành SPX Express đa cơ sở)
 Hệ thống giải quyết bài toán điều phối chặng cuối (Last-Mile Delivery) tại hệ thống Bưu cục SPX Express (mặc định demo tại Bưu cục SPX Nha Trang - Khánh Hòa, hỗ trợ mở rộng nhiều bưu cục/tỉnh thành) thông qua quy trình 2 pha thực tế với cấu trúc CSDL chuẩn hóa 3NF (5 bảng, 4 trạng thái đơn hàng):
-- Pha 1 - Tại Bưu cục (Phân cụm & Lập tuyến đầu ca cho Điều phối viên):
-  Bưu cục ($P_0$, đọc động từ bảng `buu_cuc` theo cơ sở của điều phối viên) nhận lô đơn hàng đồng bộ từ Shopee (qua Mock API JSON). Điều phối viên bấm một nút để hệ thống tự động kiểm tra tọa độ (so với tâm và bán kính phục vụ của Bưu cục $P_0$), đối chiếu Phường/Xã thuộc vùng phục vụ của Bưu cục, chạy thuật toán Phân cụm K-Means có cân bằng tải (Balanced K-Means) chia tập đơn hàng thành $K$ cụm địa lý tách biệt (mỗi cụm tối đa `suc_chua_moi_cum` = 20 đơn, gắn với 1 tài xế), sau đó chạy thuật toán Nearest Neighbor (NN) + 2-Opt tìm lộ trình tối ưu xuất phát từ Bưu cục $P_0$ đi qua các điểm trong từng cụm. Bản đồ Điều phối hiển thị trực quan Bưu cục $P_0$, tâm của từng cụm (Centroid), các điểm giao hàng theo màu cụm và đường đi tối ưu.
-- Pha 2 - Ngoài đường giao hàng (Định vị GPS & Tái định tuyến động cho Tài xế):
-  Tài xế đăng nhập trên điện thoại/trình duyệt, xem lộ trình của cụm mình phụ trách. Khi di chuyển ngoài thực tế (lấy GPS thật từ trình duyệt hoặc bấm "Chọn vị trí giả lập" trên bản đồ), hệ thống tự động tính lại lộ trình đường hở (NN + 2-Opt) từ vị trí hiện tại $S$ của tài xế qua các đơn chưa giao còn lại, vẽ đường đi theo phố bằng OSRM và đưa đơn gần nhất lên làm "Đơn kế tiếp".
+- Pha 1 - Tại Bưu cục (Phân cụm, Lập tuyến đầu ca & Đối soát Vận hành/COD cho Điều phối viên):
+  Bưu cục ($P_0$, đọc động từ bảng `buu_cuc` theo cơ sở của điều phối viên) nhận lô đơn hàng đồng bộ từ Shopee (qua Mock API JSON). Điều phối viên bấm nút đồng bộ để hệ thống tự động kiểm tra tọa độ (so với tâm và bán kính phục vụ của Bưu cục $P_0$), đối chiếu Phường/Xã thuộc vùng phục vụ của Bưu cục, áp dụng cơ chế **Khóa lộ trình đang giao (Dispatch Lock)** để bảo toàn các cụm Shipper đang chạy ngoài đường và chạy thuật toán Phân cụm K-Means có cân bằng tải (Balanced K-Means) chia tập đơn hàng chờ thành $K$ cụm địa lý tách biệt (mỗi cụm tối đa `suc_chua_moi_cum` = 20 đơn, gắn với 1 tài xế), sau đó chạy thuật toán Nearest Neighbor (NN) + 2-Opt tìm lộ trình tối ưu xuất phát từ Bưu cục $P_0$ đi qua các điểm trong từng cụm. Điều phối viên cũng có thể sửa tọa độ đơn lỗi qua **Draggable Marker Preview (Nominatim)**, chuyển cụm thủ công giữa các tài xế và đối soát tiền thu hộ COD cuối ngày.
+- Pha 2 - Ngoài đường giao hàng & Tra cứu hành trình công khai (Tài xế & Khách hàng):
+  + Tài xế đăng nhập trên điện thoại/trình duyệt (giao diện Mobile-First chuẩn thương hiệu SPX), xem thẻ nổi bật **Đơn hàng tiếp theo** (tiền thu hộ COD, gọi điện `tel:`, mở Google Maps), bật cập nhật GPS tự động hoặc chọn vị trí giả lập để tái định tuyến động đường hở (NN + 2-Opt) từ vị trí hiện tại $S$ qua các đơn chưa giao còn lại (vẽ đường phố thực tế qua OSRM), xác nhận giao thành công hoặc bắt buộc chọn lý do khi giao thất bại.
+  + Khách hàng không cần đăng nhập có thể tra cứu công khai mã vận đơn trực tiếp tại `/login?ma_van_don=...` để xem tiến trình 4 bước, Shipper phụ trách, thứ tự giao dự kiến và số tiền COD cần chuẩn bị.
 
 1.2. Tại sao mô hình này vừa đạt chuẩn CSDL 3NF, vừa thực tế, vừa dễ code trong 3-4 tuần?
 1. Giữ trọn vẹn từ khóa "Phân cụm" (Balanced K-Means) + "Tối ưu tuyến" (NN + 2-Opt): Có tâm cụm (Centroid), có phân vùng màu sắc trên bản đồ và số liệu so sánh Baseline / NN / 2-Opt rõ ràng để bảo vệ trước hội đồng.
 2. Chuẩn hóa địa giới hành chính và đa cơ sở (Multi-Hub 3NF):
    - Tách bảng `buu_cuc` (lưu Tỉnh/Thành phố, Quận/Huyện/TP trực thuộc, tọa độ $P_0$, bán kính phục vụ) và bảng `phuong` (lưu Mã hành chính quốc gia `ma_hanh_chinh`, tên phường, gắn khóa ngoại `buu_cuc_id`).
    - Giải quyết triệt để bài toán trùng tên phường giữa các quận/tỉnh khác nhau và không phải hardcode tọa độ Bưu cục hay biên tọa độ Khánh Hòa trong code PHP.
-3. Tối giản cấu trúc dữ liệu:
+3. Tối giản cấu trúc dữ liệu nhưng đáp ứng đủ nghiệp vụ vận hành & đối soát COD thực tế:
    - Chỉ có đúng 5 bảng MySQL chuẩn 3NF (`buu_cuc`, `phuong`, `nguoi_dung`, `cum_tuyen_giao`, `don_hang`).
-   - Chỉ có đúng 4 trạng thái đơn hàng (`chua_phan_cong`, `da_phan_cong`, `giao_thanh_cong`, `giao_that_bai`).
-   - Loại bỏ hoàn toàn: đối soát tiền mặt COD cuối ca, khóa bi quan 4 cấp dễ deadlock, nhập kho nhiều bước, khung giờ hẹn (VRPTW), tải trọng kg/m3. Cột `tien_thu_ho` chỉ dùng để hiển thị cho tài xế thu tiền.
+   - Chỉ có đúng 4 trạng thái đơn hàng (`chua_phan_cong`, `da_phan_cong`, `giao_thanh_cong`, `giao_that_bai`) kèm cột `ly_do_that_bai` lưu nguyên nhân hoàn/hẹn giao lại.
+   - Tận dụng trực tiếp cột `tien_thu_ho` kết hợp trạng thái đơn hàng để thống kê & đối soát tiền thu hộ COD theo từng tài xế cuối ca (không cần tách thêm bảng sổ quỹ phức tạp), đồng thời loại bỏ khóa bi quan đa cấp dễ deadlock, khung giờ hẹn (VRPTW) và tải trọng kg/m3.
 
 1.3. Tích hợp các API miễn phí phục vụ học thuật & thực tế
 1. Shopee Mock API (Nội bộ): Đọc dữ liệu mô phỏng từ `data/don_hang_mau.json` qua `ShopeeOrderClientInterface`.
@@ -83,7 +84,7 @@ File mẫu gồm 45 đơn hàng quanh TP. Nha Trang, có đầy đủ thông tin
   để tìm trong danh sách các phường có `buu_cuc_id` bằng bưu cục hiện tại và `dang_hoat_dong = 1`.
   Nếu không khớp -> Lưu đơn với trạng thái `chua_phan_cong`, `ly_do_chua_phan_cong = 'ngoai_vung_phuc_vu'`.
 - Bước 4 (Đơn hợp lệ): Lưu đơn với `buu_cuc_id` và `phuong_id` tương ứng, trạng thái tạm là `chua_phan_cong`, `ly_do_chua_phan_cong = NULL`, sẵn sàng đưa vào thuật toán Phân cụm K-Means ngay trong cùng giao dịch.
-- Xử lý sửa đơn lỗi trên giao diện Điều phối: Với các đơn bị `loi_toa_do` hoặc `ngoai_vung_phuc_vu`, điều phối viên có thể chọn lại Phường/Xã (hiển thị kèm Quận/Huyện - Tỉnh/Thành), bấm nút "Gợi ý tọa độ (Nominatim API)" hoặc chấm trực tiếp lên bản đồ rồi bấm "Cập nhật & Gán vào cụm".
+- Xử lý sửa đơn lỗi trên giao diện Điều phối: Với các đơn bị `loi_toa_do` hoặc `ngoai_vung_phuc_vu`, điều phối viên chọn lại Phường/Xã thuộc vùng phục vụ, bấm nút **"Nominatim Preview"** để hiển thị **Draggable Marker (Marker xem trước kéo-thả được)** trên bản đồ Leaflet, kéo chỉnh đúng vị trí hẻm/đường rồi bấm **"Lưu tọa độ & Gán cụm"**.
 
 
 ================================================================================
@@ -135,37 +136,37 @@ Hệ thống dùng chung một bộ giải lộ trình đường hở (Open-Path
 
 
 ================================================================================
-4. LUỒNG HOẠT ĐỘNG CỦA ĐIỀU PHỐI VIÊN VÀ TÀI XẾ
+4. LUỒNG HOẠT ĐỘNG CỦA ĐIỀU PHỐI VIÊN, TÀI XẾ VÀ KHÁCH HÀNG
 ================================================================================
 
 4.1. Luồng Điều phối viên (Tại Bưu cục)
-1. Header hiển thị rõ thông tin cơ sở hiện tại: **"Bưu cục SPX Nha Trang - TP. Nha Trang, Tỉnh Khánh Hòa"** (có thể chuyển cơ sở nếu đăng nhập quyền quản trị tổng).
-2. Bấm nút "Đồng bộ đơn Shopee & Phân cụm K-Means":
-   - Hệ thống chạy trong 1 PDO Transaction: đọc Mock JSON -> lọc đơn lỗi theo bán kính và danh mục phường của bưu cục -> chạy `BalancedKMeansService` -> chạy `NearestNeighborSolver` + `TwoOptSolver` từ Bưu cục $P_0$ -> lưu vào `cum_tuyen_giao` và `don_hang`.
-3. Quan sát Bản đồ Phân cụm & Lộ trình tổng quan (Leaflet):
-   - Hiển thị Marker Bưu cục SPX ($P_0$) nổi bật ở trung tâm kèm vòng tròn bán kính phục vụ.
-   - Mỗi cụm tài xế được vẽ bằng một màu riêng (`mau_sac_cum`, ví dụ: Đỏ, Xanh dương, Xanh lá, Tím):
-     + Marker ngôi sao/tâm tròn biểu diễn **Tâm cụm K-Means (`vi_do_tam_cum`, `kinh_do_tam_cum`)**.
-     + Các điểm đơn hàng đánh số thứ tự giao `1..n` cùng màu cụm.
-     + Đường nối lộ trình tối ưu từ $P_0 \rightarrow 1 \rightarrow 2 \dots \rightarrow n$.
-   - Có nút bật/tắt so sánh trực quan trên bản đồ: **"Xem đường Baseline (Chưa tối ưu)"** vs **"Xem đường 2-Opt (Đã tối ưu)"** để giảng viên thấy ngay các đoạn cắt chéo bị loại bỏ.
-4. Xử lý đơn lỗi (`chua_phan_cong`):
-   - Bảng bên dưới liệt kê các đơn lỗi tọa độ / ngoài vùng phục vụ.
-   - Điều phối viên chọn lại Phường/Xã từ dropdown (hiển thị dạng `Phường Bắc Nha Trang - TP. Nha Trang, Khánh Hòa [Mã: 22339]`), bấm nút **"Tìm tọa độ tự động (Nominatim)"** hoặc click chấm lại tọa độ trên bản đồ rồi bấm "Cập nhật & Gán vào cụm gần nhất".
+1. Header & Thanh điều hướng hiển thị rõ vai trò `Điều phối viên` cùng thông tin cơ sở hiện tại: **"Bưu cục SPX Nha Trang - TP. Nha Trang, Tỉnh Khánh Hòa"** (có thể chuyển đổi giữa các cơ sở như Nha Trang / Cam Ranh).
+2. Đồng bộ đơn Shopee & Khóa lộ trình đang giao (Dispatch Lock):
+   - Nút chính **"Đồng bộ Shopee & Chia tuyến"** (`reset_all = 0`): Giữ nguyên các cụm tuyến `dang_giao` mà Shipper đang đi phát ngoài đường, chỉ đồng bộ thêm đơn mới từ Mock JSON và phân bổ các đơn hợp lệ đang chờ (`chua_phan_cong`) vào cụm còn sức chứa hoặc tạo cụm mới cho tài xế rảnh.
+   - Nút phụ **"Reset & Phân cụm lại toàn bộ"** (`reset_all = 1`): Hiển thị Modal xác nhận cảnh báo trước khi làm mới các cụm tuyến của bưu cục và chạy lại toàn bộ `BalancedKMeansService` + `NearestNeighborSolver` + `TwoOptSolver` từ Bưu cục $P_0$.
+3. Quan sát Bản đồ Phân cụm & Quản lý 3 Tab Điều phối:
+   - Bản đồ Leaflet hiển thị Marker Bưu cục SPX ($P_0$), vòng bán kính phục vụ, **Tâm cụm K-Means (`vi_do_tam_cum`, `kinh_do_tam_cum`)**, các điểm đơn hàng đánh số thứ tự `1..n` (hoặc dấu `✓` / `✕` cho đơn đã xử lý) theo bảng màu tương phản cao của từng tài xế, kèm bộ nút chuyển đổi **"Baseline"** / **"2-Opt"** / **"So sánh cả hai"** và đường phố thực tế qua OSRM.
+   - Khu vực dữ liệu phía dưới được tổ chức gọn thành **3 Tab Bootstrap**:
+     + *Tab 1 - Cụm Tuyến & Tài Xế*: Tiến độ đơn (Đã giao / Đang giao / Thất bại), đối soát COD từng cụm và quãng đường `Baseline -> NN -> 2-Opt`.
+     + *Tab 2 - Đơn Hàng Lỗi Tọa Độ*: Tích hợp nút **"Nominatim Preview"** sinh **Draggable Marker** trên bản đồ để kéo-thả tinh chỉnh vị trí trước khi lưu và gán vào cụm gần nhất.
+     + *Tab 3 - Danh Sách Tất Cả Đơn Hàng & Chuyển Cụm*: Hỗ trợ lọc/tìm kiếm đơn và **Chuyển cụm / Đổi tài xế thủ công** (`hanh_dong = 'chuyen_cum'`) cho các đơn `da_phan_cong` (hệ thống tự động chạy lại NN + 2-Opt cập nhật thứ tự giao và số km tối ưu cho cả cụm nguồn và cụm đích).
 
-4.2. Luồng Tài xế (Ngoài đường giao hàng)
-1. Đăng nhập vào màn hình Tài xế:
-   - Thấy ngay tên Bưu cục trực thuộc và bản đồ Leaflet hiển thị lộ trình của cụm mình đang phụ trách (các đơn `da_phan_cong` sắp theo `thu_tu_giao ASC`), nổi bật **Đơn kế tiếp (Số 1)** kèm khoảng cách, số tiền COD, nút gọi điện (`tel:`) và nút mở Google Maps dẫn đường (`https://www.google.com/maps/dir/?api=1&destination={lat},{lng}`).
-2. Định vị GPS thực tế & Cơ chế dự phòng 2 lớp:
-   - Trình duyệt gọi `navigator.geolocation.watchPosition` để lấy vị trí thật của tài xế (cần chạy trên `http://localhost` hoặc `HTTPS`). Khi mở bằng điện thoại qua IP mạng LAN của XAMPP (`http://192.168.x.x/...`) trình duyệt chặn GPS, khi đó dùng nút "Chọn vị trí giả lập".
-   - **Dự phòng Lớp 1 (Tự động):** Khi chưa cấp quyền GPS hoặc mở trên máy bàn, hệ thống lấy vị trí gần nhất của tài xế trong DB; nếu chưa có thì lấy tọa độ **Bưu cục $P_0$** của tài xế làm điểm xuất phát mặc định.
-   - **Dự phòng Lớp 2 (Giả lập trực quan khi Demo):** Nút **"Chọn vị trí giả lập trên bản đồ"** cho phép click bất kỳ điểm nào trên bản đồ để giả lập tài xế đang đứng tại đó.
+4.2. Luồng Tài xế (Ngoài đường giao hàng - Giao diện Mobile-First)
+1. Đăng nhập vào màn hình Tài xế (`/tai-xe`):
+   - Thấy ngay thẻ nổi bật **"Đơn hàng tiếp theo" (Next-Stop Sticky Card)** ở đầu màn hình với cỡ chữ và độ tương phản cao, hiển thị rõ **Số tiền cần thu hộ COD** (hoặc nhãn *"Đơn 0đ - Không thu tiền"*), nút bấm gọi điện trực tiếp (`tel:`) và nút mở Google Maps chỉ đường ngoài (`https://www.google.com/maps/dir/?api=1&destination={lat},{lng}`).
+   - Hỗ trợ nút **"Thu gọn / Mở rộng bản đồ"** và bộ lọc đơn (*Tất cả*, *Chờ giao*, *Đã giao / Hoàn*) để thao tác một tay thuận tiện trên điện thoại.
+2. Định vị GPS thực tế, Công tắc GPS tự động & Cơ chế dự phòng 2 lớp:
+   - Trang bị công tắc (Toggle Switch) **"Tự động cập nhật GPS"** (`navigator.geolocation.watchPosition` có giãn cách tối thiểu 15 giây để tiết kiệm pin) cùng nút lấy GPS tức thời.
+   - **Dự phòng Lớp 1 (Tự động):** Khi chưa cấp quyền GPS hoặc mở trên máy bàn, hệ thống lấy vị trí gần nhất của tài xế trong DB; nếu chưa có thì lấy tọa độ **Bưu cục $P_0$** làm điểm xuất phát mặc định.
+   - **Dự phòng Lớp 2 (Giả lập trực quan khi Demo):** Nút **"Giả lập vị trí trên bản đồ"** cho phép chạm vào bất kỳ điểm nào trên bản đồ để giả lập tài xế đang đứng tại đó.
 3. Tái định tuyến động từ vị trí hiện tại (Dynamic Re-routing) & Vẽ đường phố OSRM:
-   - Khi tài xế bấm "Cập nhật lộ trình từ vị trí của tôi" (hoặc chọn vị trí giả lập mới, hoặc vừa giao xong 1 đơn), hệ thống gửi tọa độ $S = (vi\_do, kinh\_do)$ lên `POST /api/tai-xe/cap-nhat-lo-trinh`.
+   - Khi tài xế cập nhật vị trí GPS/giả lập hoặc vừa xử lý xong 1 đơn, hệ thống gửi tọa độ $S = (vi\_do, kinh\_do)$ lên `POST /api/tai-xe/cap-nhat-lo-trinh`.
    - Server kiểm tra tọa độ nằm trong bán kính phục vụ của Bưu cục, chạy lại NN + 2-Opt đường hở từ vị trí $S$ qua các đơn `da_phan_cong` còn lại của cụm, chỉ cập nhật lại `thu_tu_giao = 1..m` (không ghi đè các cột `km_*` của cụm) và lưu vị trí vào `nguoi_dung`.
-   - Giao diện gọi OSRM (`GET https://router.project-osrm.org/route/v1/driving/{lng,lat;...}?overview=full&geometries=geojson` - chú ý thứ tự `kinh_do,vi_do`) với `AbortController` timeout 3000ms để vẽ đường bám theo mặt phố thực tế; nếu OSRM quá 3 giây hoặc lỗi mạng thì tự động vẽ đường thẳng Polyline.
+   - Giao diện gọi OSRM (`AbortController` timeout 3000ms) để vẽ đường bám theo mặt phố thực tế; nếu OSRM phản hồi chậm thì tự động vẽ đường nối dự phòng Polyline.
 4. Cập nhật kết quả giao hàng (`POST /api/tai-xe/don-hang/{id}/ket-qua`):
-   - Tài xế bấm **Giao thành công** hoặc **Giao thất bại** (bắt buộc chọn/nhập lý do thất bại).
+   - Hai nút **Giao thành công** và **Giao thất bại** có chiều cao tối thiểu `44px` chống bấm nhầm:
+     + Khi bấm **Giao thành công** cho đơn có `tien_thu_ho > 0`, hiển thị hộp thoại xác nhận đã thu đủ tiền COD.
+     + Khi bấm **Giao thất bại**, mở **Modal bắt buộc chọn lý do** (*Khách không nghe máy*, *Khách hẹn giao lại ca sau*, *Sai địa chỉ/SĐT*, *Khách từ chối nhận hàng*, hoặc *Lý do khác* kèm ghi chú) để lưu vào cột `ly_do_that_bai`.
    - Câu lệnh SQL có điều kiện chống bấm đúp và chống sửa đơn của tài xế khác:
      ```sql
      UPDATE don_hang
@@ -175,7 +176,13 @@ Hệ thống dùng chung một bộ giải lộ trình đường hở (Open-Path
      WHERE id = :id AND tai_xe_id = :tx AND trang_thai = 'da_phan_cong';
      ```
    - Nếu `rowCount() == 0` thì trả mã 409 ("Đơn hàng đã được cập nhật trước đó hoặc không thuộc quyền phụ trách").
-   - Sau khi cập nhật đơn, nếu toàn bộ đơn trong `cum_tuyen_giao` đã khác `da_phan_cong` thì tự động chuyển `cum_tuyen_giao.trang_thai = 'hoan_tat'`.
+   - Ngay sau khi cập nhật thành công, bản đồ tự động di chuyển tâm (`map.flyTo`) sang tọa độ của **đơn hàng tiếp theo chưa giao**; nếu toàn bộ đơn trong cụm đã xử lý xong thì tự động chuyển `cum_tuyen_giao.trang_thai = 'hoan_tat'`.
+
+4.3. Luồng Khách hàng Tra cứu Vận đơn Công khai (Public Order Tracking)
+- Ngay tại màn hình `/login`, khách hàng không cần tài khoản có thể nhập mã vận đơn (VD: `SPXVN261010001`) để tra cứu qua `GET /login?ma_van_don=...`.
+- Hệ thống truy vấn `DonHangRepository::timTheoMaVanDon()` và hiển thị:
+  + **Thanh tiến trình 4 bước (Timeline Stepper)**: *Bưu cục tiếp nhận* $\rightarrow$ *Đã phân tuyến* $\rightarrow$ *Shipper đang giao* $\rightarrow$ *Hoàn tất giao hàng / Giao không thành công*.
+  + Thông tin bưu cục xử lý, tên người nhận kèm **SĐT đã che bảo mật** (VD: `0912***101`), địa chỉ giao, số tiền COD cần chuẩn bị, thông tin Shipper phụ trách (Họ tên, SĐT gọi nhanh, thứ tự điểm dừng dự kiến trong ca) và thời gian hoàn tất hoặc lý do giao thất bại.
 
 
 ================================================================================
@@ -183,26 +190,35 @@ Hệ thống dùng chung một bộ giải lộ trình đường hở (Open-Path
 ================================================================================
 
 5.1. Danh sách 4 màn hình
-1. Đăng nhập (`/login`): Đăng nhập theo Session cho `dieu_phoi` và `tai_xe`.
+1. Đăng nhập & Tra cứu Vận đơn Công khai (`/login`):
+   - Khu vực đăng nhập nội bộ theo Session cho `dieu_phoi` và `tai_xe` (lưu `user_id`, `vai_tro`, `buu_cuc_id`, `ten_buu_cuc`).
+   - Khu vực **Tra cứu vận đơn công khai** (`GET /login?ma_van_don=...`) dành cho khách hàng theo dõi hành trình đơn hàng.
 2. Điều phối - Bản đồ Phân cụm & Điều hành (`/dieu-phoi`):
-   - Thanh thông tin Bưu cục (Tỉnh/Thành, Quận/Huyện, danh sách Phường phục vụ) + Nút "Đồng bộ Mock API & Phân cụm K-Means".
-   - Bản đồ Leaflet đa cụm: vẽ Bưu cục $P_0$, các tâm cụm K-Means, các điểm giao hàng theo màu cụm, nút chuyển đổi xem đường Baseline vs đường 2-Opt.
-   - Bảng danh sách các Cụm tuyến (tài xế, phường ưu tiên, số đơn, đã giao, km Baseline -> km 2-Opt, % tiết kiệm) và bảng sửa nhanh các đơn `chua_phan_cong` (tích hợp nút gợi ý tọa độ Nominatim API).
-3. Điều phối - Thống kê & Thực nghiệm Thuật toán (`/thong-ke`):
-   - Biểu đồ Chart.js (Bar chart so sánh km Baseline vs NN vs 2-Opt của từng cụm; Line chart thời gian thực thi ms).
-   - Nút "Chạy Benchmark thực nghiệm (10, 20, 30, 40 đơn)" để sinh bảng số liệu đánh giá thuật toán đưa vào báo cáo Word/Slide.
-4. Tài xế - Lộ trình & Giao hàng (`/tai-xe`):
-   - Bản đồ Leaflet định vị GPS thật + nút "Chọn vị trí giả lập" + đường đi OSRM.
-   - Thẻ "Đơn kế tiếp (Số 1)" nổi bật + Nút mở Google Maps + Danh sách đơn bên dưới với 2 nút Giao thành công / Giao thất bại.
+   - Thanh thông tin Bưu cục + 4 thẻ KPI tổng quan + Nút **"Đồng bộ Shopee & Chia tuyến"** (Dispatch Lock) và nút **"Reset & Phân cụm lại"**.
+   - Bản đồ Leaflet đa cụm: vẽ Bưu cục $P_0$, các tâm cụm K-Means, điểm giao hàng theo màu cụm, lộ trình OSRM/2-Opt vs Baseline và **Draggable Marker Preview** khi sửa tọa độ.
+   - 3 Tab quản lý: Cụm tuyến & đối soát COD theo tài xế; Sửa đơn lỗi kèm Nominatim API; Danh sách tất cả đơn hàng & Chuyển cụm thủ công.
+3. Điều phối - Trung tâm Báo cáo Vận hành & Thực nghiệm Thuật toán (`/thong-ke`) gồm **2 Tab độc lập**:
+   - **Tab 1 — Quản trị Vận hành Bưu cục & Đối soát COD (Operational Dashboard)**:
+     + 4 thẻ KPI thực tế (*Tổng đơn hôm nay*, *Tỷ lệ giao thành công SLA %*, *Tiền thu hộ COD đã thu / phải thu*, *Đơn giao thất bại cần xử lý*).
+     + 3 biểu đồ Chart.js: Doughnut Chart tỷ lệ 4 trạng thái đơn (`chart-trang-thai-don`), Stacked Bar Chart tiến độ theo tài xế (`chart-tien-do-tai-xe`) và Grouped Bar Chart đối soát COD cần thu vs thực thu (`chart-doi-soat-cod`).
+     + Bảng Đối soát chi tiết Cụm tuyến & COD cuối ngày (phục vụ kế toán bưu cục thu tiền mặt cuối ca) và bảng sản lượng theo Phường/Xã.
+   - **Tab 2 — Đánh giá & Thực nghiệm Thuật toán (Algorithm Benchmark)**:
+     + 4 thẻ KPI học thuật (*Baseline km*, *Nearest Neighbor km*, *2-Opt km & % tiết kiệm*, *Thời gian chạy ms*), nút chạy Benchmark thực nghiệm ($N = 10, 20, 30, 40$ đơn) và 2 biểu đồ `chart-quang-duong`, `chart-thoi-gian`.
+4. Tài xế - Lộ trình & Giao hàng Thực địa (`/tai-xe`):
+   - Thẻ **Đơn hàng tiếp theo** nổi bật tiền COD, nút gọi `tel:` và mở Google Maps chỉ đường.
+   - Bản đồ Leaflet định vị GPS thật (có công tắc tự động cập nhật GPS, nút thu gọn bản đồ) + nút giả lập vị trí + đường đi OSRM + tự động `flyTo` sang điểm kế tiếp.
+   - Danh sách đơn hàng theo tab lọc kèm xác nhận thu COD và Modal bắt buộc chọn lý do khi giao thất bại.
 
 5.2. Danh sách API Endpoints
 - `GET  /api/mock/shopee/don-hang`          : Trả nội dung file `data/don_hang_mau.json`.
 - `GET  /api/hanh-chinh/phuong-theo-buu-cuc`: Trả danh sách phường kèm thông tin Quận/Huyện, Tỉnh/Thành của bưu cục hiện tại (và hỗ trợ đồng bộ mã hành chính từ `provinces.open-api.vn`).
-- `POST /api/dieu-phoi/phan-cum-toi-uu`     : Đồng bộ JSON, chạy Balanced K-Means + NN + 2-Opt từ Bưu cục $P_0$, lưu DB.
-- `POST /api/dieu-phoi/sua-don-loi`         : Cập nhật tọa độ/phường cho đơn `chua_phan_cong`, gán vào cụm gần nhất còn chỗ, chạy lại NN + 2-Opt từ Bưu cục $P_0$ cho cụm đó (ghi lại các cột `km_*` của cụm). Chỉ cho phép khi cụm chưa có đơn nào ở trạng thái `giao_thanh_cong` / `giao_that_bai`; ngược lại trả mã 409.
+- `POST /api/dieu-phoi/phan-cum-toi-uu`     : Đồng bộ JSON, hỗ trợ **Dispatch Lock** mặc định (`reset_all = 0` giữ nguyên cụm đang giao, chỉ phân tuyến đơn chờ mới) hoặc làm mới toàn bộ (`reset_all = 1`), chạy Balanced K-Means + NN + 2-Opt từ Bưu cục $P_0$, lưu DB.
+- `POST /api/dieu-phoi/sua-don-loi`         : Hỗ trợ 2 nghiệp vụ điều phối:
+  (1) Cập nhật tọa độ/phường cho đơn `chua_phan_cong`, gán vào cụm gần nhất còn chỗ và chạy lại NN + 2-Opt từ Bưu cục $P_0$;
+  (2) **Chuyển cụm thủ công** (`hanh_dong = 'chuyen_cum'`) chuyển đơn `da_phan_cong` sang cụm đích và tính lại thứ tự giao + quãng đường 2-Opt cho cả hai cụm.
 - `POST /api/tai-xe/cap-nhat-lo-trinh`      : Nhận tọa độ hiện tại $(vi\_do, kinh\_do)$ của tài xế, lưu vị trí và chạy lại NN + 2-Opt đường hở qua các đơn `da_phan_cong` còn lại.
-- `POST /api/tai-xe/don-hang/{id}/ket-qua`  : Cập nhật `giao_thanh_cong` hoặc `giao_that_bai` (kèm lý do).
-- `GET  /api/thong-ke/so-lieu`              : Lấy dữ liệu các cụm tuyến và chạy Benchmark phục vụ biểu đồ Chart.js.
+- `POST /api/tai-xe/don-hang/{id}/ket-qua`  : Cập nhật `giao_thanh_cong` hoặc `giao_that_bai` (bắt buộc kèm `ly_do_that_bai` hợp lệ).
+- `GET  /api/thong-ke/so-lieu`              : Lấy đầy đủ số liệu vận hành bưu cục, đối soát COD theo tài xế/phường và kết quả Benchmark phục vụ 2 Tab biểu đồ Chart.js.
 
 Quyền truy cập API:
 - `/api/dieu-phoi/*`, `/api/thong-ke/*`, `/api/hanh-chinh/*`, `/api/mock/shopee/don-hang`: chỉ `vai_tro = 'dieu_phoi'`, tài xế gọi trả 403.
@@ -363,7 +379,8 @@ Dữ liệu khởi tạo (`database/seed.php`):
 - Tạo sẵn **2 Bưu cục** để chứng minh khả năng mở rộng đa cơ sở / đa địa phương:
   1. `SPX_KH_NT01` - **Bưu cục SPX Nha Trang** (`Tỉnh Khánh Hòa` - `Thành phố Nha Trang`, `vi_do = 12.2488000`, `kinh_do = 109.1905000`, bán kính 25 km) kèm các phường thực tế (`Phường Bắc Nha Trang`, `Phường Tây Nha Trang`, `Phường Nha Trang` với mã hành chính chuẩn).
   2. `SPX_KH_CR01` - **Bưu cục SPX Cam Ranh** (`Tỉnh Khánh Hòa` - `Thành phố Cam Ranh`, `vi_do = 11.9214000`, `kinh_do = 109.1591000`, bán kính 25 km) kèm phường mẫu (`Phường Cam Nghĩa`, `Phường Cam Thuận`) để minh họa khi lọc phường luôn hiển thị rõ thuộc Quận/TP và Tỉnh nào.
-- Tạo 1 tài khoản `dieu_phoi` (`admin`) và 3 - 4 tài khoản `tai_xe` thuộc Bưu cục SPX Nha Trang với mã màu cụm riêng biệt (`#ef4444` Đỏ, `#2563eb` Xanh dương, `#16a34a` Xanh lá, `#9333ea` Tím) và vị trí khởi tạo mặc định tại Bưu cục SPX Nha Trang ($P_0$).
+- Tạo 1 tài khoản `dieu_phoi` (`admin`) và 3 tài khoản `tai_xe` (`taixe_bac`, `taixe_tay`, `taixe_nhatrang`, mật khẩu mặc định `123456`) thuộc Bưu cục SPX Nha Trang với mã màu cụm tương phản cao riêng biệt (`#ef4444` Đỏ, `#16a34a` Xanh lá, `#2563eb` Xanh dương).
+- Nạp sẵn **3 Cụm tuyến giao hàng** và **39 đơn hàng mồi** phân bổ đủ 4 trạng thái (`chua_phan_cong`, `da_phan_cong`, `giao_thanh_cong`, `giao_that_bai` kèm lý do thất bại thực tế) với tiền thu hộ COD đa dạng từ `0đ` đến `1.500.000đ` để sẵn sàng trình diễn ngay bảng Đối soát COD; đồng thời chừa lại **6 đơn hàng mới** trong `data/don_hang_mau.json` để demo trực tiếp thao tác bấm **"Đồng bộ Shopee & Chia tuyến"**.
 
 
 ================================================================================
@@ -399,7 +416,7 @@ dinh-tuyen-spx/
   app/
     bootstrap.php                (autoload, session, nạp config)
     Core/
-      Router.php, Session.php, Csrf.php, Validator.php, ViewHelper.php
+      Database.php, Router.php, Session.php, Csrf.php, Validator.php, ViewHelper.php
     Repositories/
       BuuCucRepository.php, PhuongRepository.php, NguoiDungRepository.php,
       CumTuyenGiaoRepository.php, DonHangRepository.php
@@ -420,18 +437,19 @@ dinh-tuyen-spx/
     index.php
     .htaccess
     assets/
-      css/
+      css/                       (app.css - Bộ màu thương hiệu SPX Express)
       js/                        (ban_do_dieu_phoi.js, ban_do_tai_xe.js, bieu_do.js)
       img/
   data/
-    don_hang_mau.json            (45 đơn quanh Nha Trang)
+    don_hang_mau.json            (45 đơn quanh Nha Trang kèm COD thực tế)
   database/
     schema.sql
     seed.php
   tests/
-    HaversineServiceTest.php, BalancedKMeansServiceTest.php,
-    TwoOptSolverTest.php, InboundServiceTest.php
-  docs/                          (THIET_KE.md = file này, ERD, use case, flow, báo cáo, bug_report)
+    HaversineServiceTest.php, NearestNeighborSolverTest.php,
+    TwoOptSolverTest.php, DieuPhoiLoTrinhServiceTest.php,
+    BalancedKMeansServiceTest.php, InboundServiceTest.php
+  docs/                          (THIET_KE.md = tài liệu thiết kế hệ thống)
 ```
 
 
@@ -439,23 +457,27 @@ dinh-tuyen-spx/
 8. KIỂM THỬ VÀ KỊCH BẢN DEMO BẢO VỆ ĐỒ ÁN (5 PHÚT)
 ================================================================================
 
-8.1. Kiểm thử đơn vị (PHPUnit)
-- `HaversineServiceTest`: Kiểm tra khoảng cách giữa Bưu cục $P_0$ và các mốc đã biết tại Nha Trang.
-- `BalancedKMeansServiceTest`: Kiểm tra 32 đơn chia cho 3 tài xế đảm bảo không cụm nào vượt quá 20 đơn, các điểm gần nhau về mặt địa lý nằm cùng cụm, chạy 2 lần ra kết quả giống hệt nhau (tất định). Cụm không có đơn nào bị loại bỏ, không tạo bản ghi `cum_tuyen_giao`.
-- `TwoOptSolverTest`: Đảm bảo quãng đường sau 2-Opt luôn $\le$ Nearest Neighbor trên mọi cụm (không assert so với Baseline vì NN không đảm bảo $\le$ Baseline).
-- `InboundServiceTest`: Bắt đúng đơn trùng `ma_van_don`, đơn thiếu/sai tọa độ (`loi_toa_do` vượt quá `ban_kinh_phuc_vu_km` của bưu cục), đơn sai tên phường hoặc thuộc bưu cục khác (`ngoai_vung_phuc_vu`) và xử lý đúng tiếng Việt có dấu (`mb_strtolower`).
+8.1. Kiểm thử đơn vị tự động (PHPUnit - 27 bài test / 117 assertions)
+- `HaversineServiceTest`: Kiểm tra khoảng cách giữa Bưu cục $P_0$ và các mốc thực tế tại Nha Trang, tính đối xứng, bất đẳng thức tam giác, hệ số đường bộ `1.3` và kiểm tra bán kính vùng phục vụ.
+- `NearestNeighborSolverTest` & `TwoOptSolverTest`: Kiểm tra thuật toán tham lam có quy tắc phá hòa tất định (`id ASC`) và đảm bảo quãng đường đường hở sau 2-Opt luôn $\le$ Nearest Neighbor (gỡ toàn bộ đoạn cắt chéo).
+- `DieuPhoiLoTrinhServiceTest`: Kiểm tra điều phối lộ trình tổng hợp trả đủ thứ tự điểm dừng `1..n`, `km_baseline`, `km_nn`, `km_toi_uu` và `thoi_gian_chay_ms`.
+- `BalancedKMeansServiceTest`: Kiểm tra 32 đơn chia cho 3 tài xế đảm bảo không cụm nào vượt sức chứa 20 đơn, gắn kết địa lý, kết quả tất định 100% và loại bỏ cụm rỗng.
+- `InboundServiceTest`: Kiểm tra `MockShopeeOrderService` và quy tắc lọc đơn trùng `ma_van_don`, đơn thiếu/sai tọa độ (`loi_toa_do` vượt `ban_kinh_phuc_vu_km`), đơn sai phường (`ngoai_vung_phuc_vu`) và chuẩn hóa tiếng Việt đa byte (`mb_strtolower`).
 
-8.2. Kịch bản Demo trực tiếp trước Hội đồng (Ấn tượng & Thuyết phục)
-1. Mở màn hình Điều phối (`/dieu-phoi`): Chỉ vào thông tin **Cơ sở: Bưu cục SPX Nha Trang (TP. Nha Trang - Tỉnh Khánh Hòa)** và bấm **"Đồng bộ Mock API & Phân cụm K-Means"**.
-2. Giải thích trên Bản đồ Tổng quan:
-   - Chỉ vào icon **Bưu cục SPX ($P_0$)** và các ngôi sao **Tâm cụm (Centroid)** vừa được thuật toán `BalancedKMeansService` tìm ra.
-   - Bật/tắt nút **"So sánh Baseline vs 2-Opt"** trên bản đồ để hội đồng thấy đường đi rối rắm ban đầu biến thành lộ trình mượt không cắt chéo, giảm X% số km.
-   - Sửa nhanh 1 đơn bị lỗi tọa độ ở bảng dưới: chọn Phường từ dropdown (có ghi rõ Quận/Huyện, Tỉnh/Thành và Mã hành chính), bấm nút **"Tìm tọa độ tự động (Nominatim API)"** và gán bổ sung vào cụm gần nhất.
-3. Mở màn hình Tài xế (`/tai-xe`) ở tab bên cạnh:
-   - Hiển thị lộ trình thực tế bám theo đường phố Nha Trang (nhờ OSRM) và thẻ "Đơn kế tiếp".
-   - Bấm **"Chọn vị trí giả lập"** chấm sang một góc phố khác trên bản đồ -> Lộ trình và thứ tự `1..n` tự động tính lại tức thì từ vị trí mới của tài xế.
-   - Bấm **"Giao thành công"** đơn số 1 -> Đơn biến mất khỏi lộ trình chờ, đơn tiếp theo đôn lên số 1.
-4. Mở màn hình Thống kê (`/thong-ke`): Trình chiếu biểu đồ Chart.js so sánh quãng đường và thời gian chạy thuật toán dưới vài chục mili-giây.
+8.2. Kịch bản Demo Khép Kín End-to-End trước Hội đồng (Ấn tượng & Thuyết phục)
+1. **Bước 1 - Điều phối viên (`/dieu-phoi`)**:
+   - Đăng nhập `admin / 123456` -> Bấm **"Đồng bộ Shopee & Chia tuyến"** (cơ chế *Dispatch Lock* tự động nạp thêm các đơn chờ mới mà không làm xáo trộn cụm đang giao).
+   - Bật/tắt chế độ xem **"Baseline"** vs **"2-Opt"** vs **"So sánh cả hai"** trên bản đồ để hội đồng thấy lộ trình cắt chéo được gỡ mượt mà.
+   - Mở Tab *Đơn hàng lỗi tọa độ*, bấm **"Nominatim Preview"**, kéo-thả **Draggable Marker** tới đúng hẻm/đường rồi bấm **"Lưu tọa độ & Gán cụm"**; thử chuyển thủ công 1 đơn giữa 2 tài xế ở Tab *Tất cả đơn hàng*.
+2. **Bước 2 - Khách hàng Tra cứu Công khai (`/login?ma_van_don=...`)**:
+   - Mở trang `/login` (ẩn danh / không cần đăng nhập) -> Nhập mã vận đơn vừa phân tuyến (VD: `SPXVN261010001`) -> Trình chiếu thanh tiến trình 4 bước, SĐT khách được che bảo mật (`0912***101`), tên & SĐT Shipper phụ trách và số tiền COD cần chuẩn bị.
+3. **Bước 3 - Tài xế ngoài đường (`/tai-xe`)**:
+   - Đăng nhập tài khoản Shipper (`taixe_bac / 123456`) trên giao diện Mobile -> Chỉ vào thẻ **"Đơn hàng tiếp theo"** nổi bật số tiền COD, nút gọi `tel:` và mở Google Maps.
+   - Bấm **"Giả lập vị trí trên bản đồ"** chấm sang góc phố khác -> Lộ trình đường phố OSRM và thứ tự `1..n` tự động tái định tuyến tức thì.
+   - Bấm **"Giao thành công"** đơn số 1 (xác nhận thu COD, bản đồ tự động `flyTo` sang đơn số 2) và bấm **"Giao thất bại"** đơn số 2 kèm chọn lý do bắt buộc (*"Khách hẹn giao lại ca sau"*).
+4. **Bước 4 - Trung tâm Báo cáo & Thực nghiệm (`/thong-ke`)**:
+   - Kiểm tra **Tab 1 (Quản trị Vận hành & Đối soát COD)**: Số đơn thành công, tiền COD thực thu phải nộp về bưu cục của Shipper và số đơn thất bại tự động cập nhật trên KPI, 3 biểu đồ Chart.js và Bảng đối soát cuối ngày.
+   - Chuyển sang **Tab 2 (Thực nghiệm Thuật toán)**: Bấm chạy Benchmark ($10, 20, 30, 40$ đơn) trình chiếu biểu đồ so sánh quãng đường `Baseline / NN / 2-Opt` và thời gian thực thi dưới vài chục mili-giây.
 
 
 ================================================================================
@@ -548,8 +570,8 @@ A. THÀNH VIÊN 1 [NGƯỜI 1]: BACKEND LEAD, THUẬT TOÁN CỐT LÕI & KIỂM 
   3. Tuần 2: Cài đặt `BalancedKMeansService` (khởi tạo góc quạt, gán ưu tiên theo hiệu khoảng cách, cân tải <= 20) và `TwoOptSolver` (đường hở). Viết `DieuPhoiLoTrinhService` làm cầu nối gọi NN + 2-Opt. Chạy PHPUnit phủ xanh 100%.
   4. Tuần 3: Viết script Benchmark đo thời gian chạy (ms) và hỗ trợ [THÀNH VIÊN 2] tích hợp API thống kê.
 
-B. THÀNH VIÊN 2 [NGƯỜI 2]: CƠ SỞ DỮ LIỆU 3NF, ĐIỀU PHỐI VIÊN & THỐNG KÊ (DATA & DISPATCHER)
-- Vai trò: Quản trị CSDL MySQL 5 bảng chuẩn 3NF, chuẩn hóa dữ liệu đầu vào Shopee & hành chính, xây dựng toàn bộ chức năng Điều phối (Bản đồ phân cụm, sửa đơn lỗi kèm Nominatim Geocoding) và màn hình Thống kê thuật toán.
+B. THÀNH VIÊN 2 [NGƯỜI 2]: CƠ SỞ DỮ LIỆU 3NF, ĐIỀU PHỐI VIÊN, ĐỐI SOÁT COD & THỐNG KÊ (DATA & DISPATCHER)
+- Vai trò: Quản trị CSDL MySQL 5 bảng chuẩn 3NF, chuẩn hóa dữ liệu đầu vào Shopee & hành chính, xây dựng toàn bộ chức năng Điều phối (Khóa lộ trình đang giao Dispatch Lock, Chuyển cụm thủ công, sửa đơn lỗi kèm Draggable Marker Nominatim) và Trung tâm Thống kê 2 Tab (Vận hành/Đối soát COD & Benchmark Thuật toán).
 - Danh sách file sở hữu 100%:
   + `database/schema.sql`, `database/seed.php`
   + `data/don_hang_mau.json`
@@ -560,13 +582,13 @@ B. THÀNH VIÊN 2 [NGƯỜI 2]: CƠ SỞ DỮ LIỆU 3NF, ĐIỀU PHỐI VIÊN &
   + `public/assets/js/ban_do_dieu_phoi.js`, `public/assets/js/bieu_do.js`
   + `tests/InboundServiceTest.php`
 - Thứ tự thực hiện:
-  1. Ngày 2: Chạy `schema.sql` trên XAMPP, hoàn thiện `seed.php` nạp 2 Bưu cục (Nha Trang & Cam Ranh), các phường chuẩn mã hành chính, 1 điều phối, 3 tài xế và file `data/don_hang_mau.json` (45 đơn chuẩn).
-  2. Tuần 1: Viết 5 Repositories sử dụng PDO Prepared Statements (qua `Database::getConnection()`) và viết `InboundService` (kiểm tra bán kính động từ `buu_cuc.ban_kinh_phuc_vu_km` và chuẩn hóa tiếng Việt đa byte `mb_strtolower`).
-  3. Tuần 2: Xây dựng `DieuPhoiController`, viết view `/dieu-phoi` và file `ban_do_dieu_phoi.js` (dùng Leaflet vẽ Bưu cục P0, các tâm cụm K-Means, các điểm đơn hàng theo màu cụm, lộ trình 2-Opt và tích hợp Nominatim API gợi ý tọa độ khi sửa đơn lỗi).
-  4. Tuần 3: Xây dựng `ThongKeController`, view `/thong-ke` và `bieu_do.js` (Chart.js so sánh km Baseline vs NN vs 2-Opt, thời gian chạy ms).
+  1. Ngày 2: Chạy `schema.sql` trên XAMPP, hoàn thiện `seed.php` nạp 2 Bưu cục (Nha Trang & Cam Ranh), các phường chuẩn mã hành chính, 1 điều phối, 3 tài xế, dữ liệu mồi 4 trạng thái kèm COD thực tế và file `data/don_hang_mau.json` (45 đơn chuẩn).
+  2. Tuần 1: Viết 5 Repositories sử dụng PDO Prepared Statements (bao gồm các hàm truy vấn tra cứu mã vận đơn công khai `timTheoMaVanDon`, thống kê trạng thái đơn & đối soát COD theo tài xế/phường) và viết `InboundService`.
+  3. Tuần 2: Xây dựng `DieuPhoiController`, view `/dieu-phoi` (3 Tab Bootstrap) và `ban_do_dieu_phoi.js` (Dispatch Lock bảo vệ cụm đang giao, chuyển cụm thủ công chạy lại 2-Opt, bản đồ Leaflet + OSRM và Draggable Marker Preview khi tra cứu Nominatim API).
+  4. Tuần 3: Xây dựng `ThongKeController`, view `/thong-ke` và `bieu_do.js` tách làm 2 Tab độc lập: Tab 1 Quản trị Vận hành & Đối soát COD cuối ngày (3 biểu đồ Doughnut, Stacked Bar, Grouped Bar + bảng đối soát) và Tab 2 Thực nghiệm Benchmark Thuật toán.
 
-C. THÀNH VIÊN 3 [NGƯỜI 3]: XÁC THỰC, ỨNG DỤNG TÀI XẾ & ĐỊNH VỊ GPS THỰC ĐỊA (DRIVER & MAPS)
-- Vai trò: Quản lý đăng nhập/bảo mật người dùng (lưu `user_id`, `vai_tro`, `buu_cuc_id` vào Session), xây dựng layout dùng chung, giao diện ứng dụng di động cho Tài xế, tích hợp định vị GPS trình duyệt, giả lập vị trí và gọi OSRM chỉ đường.
+C. THÀNH VIÊN 3 [NGƯỜI 3]: XÁC THỰC, TRA CỨU VẬN ĐƠN CÔNG KHAI, ỨNG DỤNG TÀI XẾ & UI/UX THƯƠNG HIỆU SPX (DRIVER & TRACKING)
+- Vai trò: Quản lý đăng nhập/bảo mật người dùng, xây dựng Cổng tra cứu mã vận đơn công khai cho khách hàng, chuẩn hóa bộ nhận diện thương hiệu SPX Express trên layout dùng chung và phát triển ứng dụng di động thực địa cho Tài xế (GPS tự động, giả lập vị trí, OSRM, xác nhận COD & bắt buộc chọn lý do giao thất bại).
 - Danh sách file sở hữu 100%:
   + `app/Controllers/AuthController.php`
   + `app/Controllers/TaiXeController.php`
@@ -576,10 +598,10 @@ C. THÀNH VIÊN 3 [NGƯỜI 3]: XÁC THỰC, ỨNG DỤNG TÀI XẾ & ĐỊNH V�
   + `public/assets/css/app.css`
   + `public/assets/js/ban_do_tai_xe.js`
 - Thứ tự thực hiện:
-  1. Ngày 2: Thiết lập layout Bootstrap 5 chung (`layouts/`) nhúng sẵn Leaflet & Chart.js cho cả nhóm, viết `AuthController` (xác thực mật khẩu Bcrypt, lưu `user_id`, `vai_tro`, `buu_cuc_id` vào Session).
-  2. Tuần 1: Dựng giao diện màn hình Tài xế `/tai-xe` (giao diện chuẩn mobile responsive, danh sách đơn hàng có nút gọi khách `tel:`, nút mở Google Maps).
-  3. Tuần 2: Viết `ban_do_tai_xe.js`: tích hợp `navigator.geolocation`, xử lý nút "Chọn vị trí giả lập trên bản đồ", gọi API OSRM vẽ đường theo phố và dự phòng Polyline khi timeout 3s.
-  4. Tuần 3: Xây dựng các API tài xế: `POST /api/tai-xe/cap-nhat-lo-trinh` (tái định tuyến động) và `POST /api/tai-xe/don-hang/{id}/ket-qua` (chặn bấm đúp, chuyển trạng thái cụm sang `hoan_tat` khi hết đơn).
+  1. Ngày 2: Thiết lập layout Bootstrap 5 chuẩn màu thương hiệu SPX Express (`#EE4D2D`, `#1E293B`...) hiển thị rõ vai trò & tên bưu cục trên `navbar.php`; viết `AuthController` và tích hợp Cổng tra cứu vận đơn công khai (`GET /login?ma_van_don=...` kèm thanh tiến trình 4 bước và che SĐT khách hàng) ngay trên `login.php`.
+  2. Tuần 1: Dựng giao diện Mobile-First màn hình Tài xế `/tai-xe` với thẻ nổi bật "Đơn hàng tiếp theo" (hiển thị tiền thu hộ COD / đơn 0đ, nút gọi điện `tel:`, mở Google Maps chỉ đường ngoài, nút thu gọn bản đồ và bộ lọc trạng thái đơn).
+  3. Tuần 2: Viết `ban_do_tai_xe.js`: tích hợp công tắc tự động cập nhật GPS (`watchPosition`), nút "Giả lập vị trí trên bản đồ", gọi API OSRM vẽ đường theo phố (dự phòng Polyline khi timeout 3s) và tự động `map.flyTo` sang điểm kế tiếp sau khi giao xong.
+  4. Tuần 3: Xây dựng `TaiXeController` cho `POST /api/tai-xe/cap-nhat-lo-trinh` và `POST /api/tai-xe/don-hang/{id}/ket-qua` kết hợp Modal bắt buộc chọn lý do giao thất bại (lưu `ly_do_that_bai`), xác nhận thu COD, chặn bấm đúp và tự động chuyển cụm sang `hoan_tat`.
 
 
 10.3. Thứ tự các bước tích hợp và quy trình Git chuẩn

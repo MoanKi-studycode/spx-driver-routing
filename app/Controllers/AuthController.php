@@ -48,16 +48,19 @@ class AuthController
             } else {
                 try {
                     $repository = new DonHangRepository(Database::getConnection());
-                    if (!method_exists($repository, 'findPublicTrackingByCode')) {
+                    if (method_exists($repository, 'timTheoMaVanDon')) {
+                        $trackingResult = $repository->timTheoMaVanDon($trackingCode);
+                    } elseif (method_exists($repository, 'findPublicTrackingByCode')) {
+                        $trackingResult = $repository->findPublicTrackingByCode($trackingCode);
+                    } else {
                         $trackingError = 'Chức năng tra cứu đang chờ Repository tra cứu vận đơn được tích hợp.';
                         $statusCode = 503;
-                    } else {
-                        $trackingResult = $repository->findPublicTrackingByCode($trackingCode);
-                        if (!is_array($trackingResult) || $trackingResult === []) {
-                            $trackingResult = null;
-                            $trackingError = 'Không tìm thấy mã vận đơn này.';
-                            $statusCode = 404;
-                        }
+                    }
+
+                    if ($statusCode === 200 && (!is_array($trackingResult) || $trackingResult === [])) {
+                        $trackingResult = null;
+                        $trackingError = 'Không tìm thấy mã vận đơn này.';
+                        $statusCode = 404;
                     }
                 } catch (PDOException $exception) {
                     error_log('Không thể tra cứu vận đơn: ' . $exception->getMessage());
